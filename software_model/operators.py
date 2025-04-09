@@ -2,6 +2,7 @@ from utils import size, closest_factors
 from typing import List, Tuple, Union
 from hardware_model.device import Device
 from software_model.utils import Tensor, DataType
+from software_model.graph import DependencyGraph
 
 
 class Operator:
@@ -31,6 +32,7 @@ class Operator:
         self.is_io_bound = None
         # run on gpu
         self.iterations = 50
+        self.dependencies = []
 
     class mapping:
         pass
@@ -40,10 +42,14 @@ class Operator:
 
 
 class Reshape(Operator):
+    __count = 0
+
     def __init__(self, data_type: DataType):
         super().__init__(0, 0, 0, 0, data_type)
+        self.name = f"{self.__class__.__name__}_{Reshape.__count}"
         self.input_shape = None
         self.output_shape = None
+        Reshape.__count += 1
 
     def __call__(self, input: Tensor, output_shape: List[int]) -> Tensor:
         assert input.size == size(output_shape)
@@ -55,16 +61,21 @@ class Reshape(Operator):
         self.input_shape = input.shape
         self.output_shape = output_shape
         output = Tensor(output_shape, self.data_type)
+        DependencyGraph.add_node_to_graph(output, [input], self.__class__.__name__)
         return output
 
 
 class Concat(Operator):
+    __count=0
+
     def __init__(self, data_type: DataType):
         super().__init__(0, 0, 0, 0, data_type)
+        self.name = f"{self.__class__.__name__}_{Concat.__count}"
         self.input1_shape = None
         self.input2_shape = None
         self.concat_dim = None
         self.output_shape = None
+        Concat.__count += 1
 
     def __call__(self, input1: Tensor, input2: Tensor, concat_dim: int) -> Tensor:
         assert len(input1.shape) == len(input2.shape)
@@ -85,14 +96,19 @@ class Concat(Operator):
             + input1.shape[concat_dim + 1 :]
         )
         output = Tensor(self.output_shape, self.data_type)
+        DependencyGraph.add_node_to_graph(output, [input1, input2], self.__class__.__name__)
         return output
 
 
 class Transpose(Operator):
+    __count=0
+
     def __init__(self, data_type: DataType):
         super().__init__(0, 0, 0, 0, data_type)
+        self.name = f"{self.__class__.__name__}_{Transpose.__count}"
         self.input_shape = None
         self.output_shape = None
+        Transpose.__count += 1
 
     def __call__(self, input: Tensor, permute: List[int]) -> Tensor:
         assert len(input.shape) == len(permute)
@@ -107,4 +123,5 @@ class Transpose(Operator):
 
         self.output_shape = [self.input_shape[i] for i in permute]
         output = Tensor(self.output_shape, self.data_type)
+        DependencyGraph.add_node_to_graph(output, [input], self.__class__.__name__)
         return output

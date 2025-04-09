@@ -9,9 +9,10 @@ from software_model.softmax import Softmax
 from software_model.layernorm import LayerNorm
 from software_model.gelu import GeLU
 
-
-from software_model.utils import Tensor, DataType
+from software_model.utils import Tensor, DataType, data_type_dict
 from software_model.communication_primitives import AllReduceMultiPCB
+from software_model.graph import DependencyGraph
+from software_model.utils import SymbolTable
 from math import ceil
 from typing import List
 from hardware_model.system import System
@@ -718,3 +719,25 @@ class LLMInitComputationTP:
         device_count,
     ) -> None:
         pass
+
+if __name__ == "__main__":
+    from pathlib import Path
+    model_auto_regression = TransformerBlockAutoRegressionTP(
+        d_model=12288,
+        n_heads=96,
+        device_count=4,
+        data_type=data_type_dict["fp16"],
+    )
+    _ = model_auto_regression(
+        Tensor([16, 1, 12288], data_type_dict["fp16"]),
+        256,
+    )
+
+    symbol_table_path = Path("symbol_table.json")
+    dep_graph_path = Path("dep_graph.json")
+    SymbolTable.dump_symbol_table_to_json(symbol_table_path)
+    DependencyGraph.dump_graph_to_json(dep_graph_path)
+
+    print("symbol table dumped to: ", symbol_table_path)
+    print("dep graph dumped to: ", dep_graph_path)
+

@@ -3,6 +3,7 @@ from typing import List, Tuple
 from hardware_model.device import Device
 from software_model.operators import Operator
 from software_model.utils import Tensor, DataType
+from software_model.graph import DependencyGraph
 from math import ceil, log2, floor
 import torch
 import time
@@ -15,11 +16,15 @@ import copy
 
 
 class BatchedMatmul(Operator):
+    __count = 0
+
     def __init__(self, data_type: DataType):
         super().__init__(0, 0, 0, 0, data_type)
+        self.name = f"{self.__class__.__name__}_{BatchedMatmul.__count}"
         self.input1_shape = None
         self.input2_shape = None
         self.output_shape = None
+        BatchedMatmul.__count += 1
 
     def __call__(self, input1: Tensor, input2: Tensor) -> Tensor:
         # [b, M, K] * [b, K, N] = [b, M, N]
@@ -35,6 +40,7 @@ class BatchedMatmul(Operator):
         self.N = self.input2_shape[-1]
         self.output_shape = self.input1_shape[:-2] + [self.M, self.N]
         output = Tensor(self.output_shape, self.data_type)
+        DependencyGraph.add_node_to_graph(output, [input1, input2], self.__class__.__name__)
         return output
 
     def roofline_model(self, pcb_module: Device):
@@ -120,13 +126,17 @@ class BatchedMatmul(Operator):
 
 
 class Matmul(Operator):
+    __count=0
+
     def __init__(self, data_type: DataType):
         super().__init__(0, 0, 0, 0, data_type)
+        self.name = f"{self.__class__.__name__}_{Matmul.__count}"
         self.input1_shape = None
         self.input2_shape = None
         self.output_shape = None
         self.look_up_table = None
         self.best_mapping = None
+        Matmul.__count += 1
 
     def __call__(self, input1: Tensor, input2: Tensor) -> Tensor:
         # [bs, M, K] * [K, N] = [bs, M, N]
@@ -149,6 +159,7 @@ class Matmul(Operator):
         self.flop_count = 2 * self.M * self.K * self.N
         self.io_count = self.M * self.K + self.K * self.N + self.M * self.N
         # print(f'{self.M}, {self.N}, {self.K}')
+        DependencyGraph.add_node_to_graph(output, [input1, input2], self.__class__.__name__)
         return output
 
     def roofline_model(self, pcb_module: Device):

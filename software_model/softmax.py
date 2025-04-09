@@ -3,6 +3,7 @@ from typing import List, Tuple
 from hardware_model.device import Device
 from software_model.operators import Operator
 from software_model.utils import Tensor, DataType
+from software_model.graph import DependencyGraph
 from math import ceil, log2
 import torch
 import time
@@ -11,9 +12,13 @@ import numpy as np
 
 
 class Softmax(Operator):
+    __count = 0
+
     def __init__(self, data_type: DataType):
         super().__init__(0, 0, 0, 0, data_type)
+        self.name = f"{self.__class__.__name__}_{Softmax.__count}"
         self.shape = None
+        Softmax.__count += 1
 
     def __call__(self, input: Tensor) -> Tensor:
         assert self.data_type == input.data_type
@@ -23,6 +28,7 @@ class Softmax(Operator):
         self.computational_graph = self.ComputationalGraph(
             self.M, self.N, self.data_type
         )
+        DependencyGraph.add_node_to_graph(input, [input], self.__class__.__name__)
         return input
 
     def print_latency(self):
