@@ -9,14 +9,14 @@ class SymbolTable:
     keys = ["variable_name", "start_addr", "data_type", "size", "shape"]
 
     @classmethod
-    def create_entry(cls, t, reuse_t=None):
+    def create_entry(cls, t, reuse_t=None, offset=0):
         entry = {}
         entry["data_type"] = t.data_type
         entry["size"] = t.size * t.data_type.word_size
         entry["shape"] = t.shape
 
         if reuse_t:
-            entry["start_addr"] = cls.table[reuse_t.name]["start_addr"]
+            entry["start_addr"] = cls.table[reuse_t.name]["start_addr"] + offset
 
         else:
             entry["start_addr"] = SymbolTable.addr + 1
@@ -54,3 +54,33 @@ class Tensor:
 
         SymbolTable.create_entry(self)
         Tensor.__count += 1
+
+    def __getitem__(self, keys):
+        if isinstance(keys, tuple):
+            
+            new_shape = self.shape
+            row_maj_strides = [1 for _ in range(len(new_shape))]
+            idx = len(row_maj_strides) - 2
+            while idx >=0:
+                row_maj_strides[idx] = row_maj_strides[idx + 1] * self.shape[idx + 1]
+
+            new_offset = 0
+            for i, key in enumerate(keys):
+                if isinstance (key, slice):
+                    if key.start is None:
+                        key = slice(0, key.stop, key.step)
+                    
+                    num_rows = self.shape[i]
+                    if key.stop:
+                        num_rows = key.stop - key.start
+                    elif key.stop is None:
+                        num_rows = new_shape[i] - key.start
+
+                    new_shape[i] = num_rows
+                new_offset += key.start * row_maj_strides[i]
+            new_tensor = Tensor(new_shape, data_type=self.data_type)
+            SymbolTable.create_entry(new_tensor, reuse_t=self, offset=new_offset)
+            return new_tensor
+
+        else:
+            return self
