@@ -1,0 +1,888 @@
+{
+    "Matmul_0": {
+        "dep": {
+            "op_0": {
+                "data_type": [
+                    "int8",
+                    1
+                ],
+                "size": 12288,
+                "shape": [
+                    1,
+                    1,
+                    12288
+                ],
+                "start_addr": 1811939334,
+                "variable_name": "Tensor_6"
+            },
+            "op_1": {
+                "data_type": [
+                    "int8",
+                    1
+                ],
+                "size": 150994944,
+                "shape": [
+                    12288,
+                    12288
+                ],
+                "start_addr": 0,
+                "variable_name": "Tensor_0"
+            }
+        },
+        "op": "Matmul",
+        "out": {
+            "data_type": [
+                "int8",
+                1
+            ],
+            "size": 12288,
+            "shape": [
+                1,
+                1,
+                12288
+            ],
+            "start_addr": 1818243081,
+            "variable_name": "Tensor_9"
+        }
+    },
+    "Matmul_1": {
+        "dep": {
+            "op_0": {
+                "data_type": [
+                    "int8",
+                    1
+                ],
+                "size": 12288,
+                "shape": [
+                    1,
+                    1,
+                    12288
+                ],
+                "start_addr": 1811939334,
+                "variable_name": "Tensor_6"
+            },
+            "op_1": {
+                "data_type": [
+                    "int8",
+                    1
+                ],
+                "size": 150994944,
+                "shape": [
+                    12288,
+                    12288
+                ],
+                "start_addr": 150994945,
+                "variable_name": "Tensor_1"
+            }
+        },
+        "op": "Matmul",
+        "out": {
+            "data_type": [
+                "int8",
+                1
+            ],
+            "size": 12288,
+            "shape": [
+                1,
+                1,
+                12288
+            ],
+            "start_addr": 1818255370,
+            "variable_name": "Tensor_10"
+        }
+    },
+    "Matmul_2": {
+        "dep": {
+            "op_0": {
+                "data_type": [
+                    "int8",
+                    1
+                ],
+                "size": 12288,
+                "shape": [
+                    1,
+                    1,
+                    12288
+                ],
+                "start_addr": 1811939334,
+                "variable_name": "Tensor_6"
+            },
+            "op_1": {
+                "data_type": [
+                    "int8",
+                    1
+                ],
+                "size": 150994944,
+                "shape": [
+                    12288,
+                    12288
+                ],
+                "start_addr": 301989890,
+                "variable_name": "Tensor_2"
+            }
+        },
+        "op": "Matmul",
+        "out": {
+            "data_type": [
+                "int8",
+                1
+            ],
+            "size": 12288,
+            "shape": [
+                1,
+                1,
+                12288
+            ],
+            "start_addr": 1818267659,
+            "variable_name": "Tensor_11"
+        }
+    },
+    "Reshape_0": {
+        "dep": {
+            "op_0": {
+                "data_type": [
+                    "int8",
+                    1
+                ],
+                "size": 12288,
+                "shape": [
+                    1,
+                    1,
+                    12288
+                ],
+                "start_addr": 1818243081,
+                "variable_name": "Tensor_9"
+            }
+        },
+        "op": "Reshape",
+        "out": {
+            "data_type": [
+                "int8",
+                1
+            ],
+            "size": 12288,
+            "shape": [
+                1,
+                1,
+                96,
+                128
+            ],
+            "start_addr": 1818279948,
+            "variable_name": "Tensor_12"
+        }
+    },
+    "Reshape_1": {
+        "dep": {
+            "op_0": {
+                "data_type": [
+                    "int8",
+                    1
+                ],
+                "size": 12288,
+                "shape": [
+                    1,
+                    1,
+                    12288
+                ],
+                "start_addr": 1818255370,
+                "variable_name": "Tensor_10"
+            }
+        },
+        "op": "Reshape",
+        "out": {
+            "data_type": [
+                "int8",
+                1
+            ],
+            "size": 12288,
+            "shape": [
+                1,
+                1,
+                96,
+                128
+            ],
+            "start_addr": 1818292237,
+            "variable_name": "Tensor_13"
+        }
+    },
+    "Reshape_2": {
+        "dep": {
+            "op_0": {
+                "data_type": [
+                    "int8",
+                    1
+                ],
+                "size": 12288,
+                "shape": [
+                    1,
+                    1,
+                    12288
+                ],
+                "start_addr": 1818267659,
+                "variable_name": "Tensor_11"
+            }
+        },
+        "op": "Reshape",
+        "out": {
+            "data_type": [
+                "int8",
+                1
+            ],
+            "size": 12288,
+            "shape": [
+                1,
+                1,
+                96,
+                128
+            ],
+            "start_addr": 1818304526,
+            "variable_name": "Tensor_14"
+        }
+    },
+    "Transpose_0": {
+        "dep": {
+            "op_0": {
+                "data_type": [
+                    "int8",
+                    1
+                ],
+                "size": 12288,
+                "shape": [
+                    1,
+                    1,
+                    96,
+                    128
+                ],
+                "start_addr": 1818279948,
+                "variable_name": "Tensor_12"
+            }
+        },
+        "op": "Transpose",
+        "out": {
+            "data_type": [
+                "int8",
+                1
+            ],
+            "size": 12288,
+            "shape": [
+                1,
+                96,
+                1,
+                128
+            ],
+            "start_addr": 1818316815,
+            "variable_name": "Tensor_15"
+        }
+    },
+    "Transpose_1": {
+        "dep": {
+            "op_0": {
+                "data_type": [
+                    "int8",
+                    1
+                ],
+                "size": 12288,
+                "shape": [
+                    1,
+                    1,
+                    96,
+                    128
+                ],
+                "start_addr": 1818292237,
+                "variable_name": "Tensor_13"
+            }
+        },
+        "op": "Transpose",
+        "out": {
+            "data_type": [
+                "int8",
+                1
+            ],
+            "size": 12288,
+            "shape": [
+                1,
+                96,
+                128,
+                1
+            ],
+            "start_addr": 1818329104,
+            "variable_name": "Tensor_16"
+        }
+    },
+    "Transpose_2": {
+        "dep": {
+            "op_0": {
+                "data_type": [
+                    "int8",
+                    1
+                ],
+                "size": 12288,
+                "shape": [
+                    1,
+                    1,
+                    96,
+                    128
+                ],
+                "start_addr": 1818304526,
+                "variable_name": "Tensor_14"
+            }
+        },
+        "op": "Transpose",
+        "out": {
+            "data_type": [
+                "int8",
+                1
+            ],
+            "size": 12288,
+            "shape": [
+                1,
+                96,
+                1,
+                128
+            ],
+            "start_addr": 1818341393,
+            "variable_name": "Tensor_17"
+        }
+    },
+    "Concat_0": {
+        "dep": {
+            "op_0": {
+                "data_type": [
+                    "int8",
+                    1
+                ],
+                "size": 3145728,
+                "shape": [
+                    1,
+                    96,
+                    128,
+                    256
+                ],
+                "start_addr": 1811951623,
+                "variable_name": "Tensor_7"
+            },
+            "op_1": {
+                "data_type": [
+                    "int8",
+                    1
+                ],
+                "size": 12288,
+                "shape": [
+                    1,
+                    96,
+                    128,
+                    1
+                ],
+                "start_addr": 1818329104,
+                "variable_name": "Tensor_16"
+            }
+        },
+        "op": "Concat",
+        "out": {
+            "data_type": [
+                "int8",
+                1
+            ],
+            "size": 3158016,
+            "shape": [
+                1,
+                96,
+                128,
+                257
+            ],
+            "start_addr": 1818353682,
+            "variable_name": "Tensor_18"
+        }
+    },
+    "Concat_1": {
+        "dep": {
+            "op_0": {
+                "data_type": [
+                    "int8",
+                    1
+                ],
+                "size": 3145728,
+                "shape": [
+                    1,
+                    96,
+                    256,
+                    128
+                ],
+                "start_addr": 1815097352,
+                "variable_name": "Tensor_8"
+            },
+            "op_1": {
+                "data_type": [
+                    "int8",
+                    1
+                ],
+                "size": 12288,
+                "shape": [
+                    1,
+                    96,
+                    1,
+                    128
+                ],
+                "start_addr": 1818341393,
+                "variable_name": "Tensor_17"
+            }
+        },
+        "op": "Concat",
+        "out": {
+            "data_type": [
+                "int8",
+                1
+            ],
+            "size": 3158016,
+            "shape": [
+                1,
+                96,
+                257,
+                128
+            ],
+            "start_addr": 1821511699,
+            "variable_name": "Tensor_19"
+        }
+    },
+    "BatchedMatmul_0": {
+        "dep": {
+            "op_0": {
+                "data_type": [
+                    "int8",
+                    1
+                ],
+                "size": 12288,
+                "shape": [
+                    1,
+                    96,
+                    1,
+                    128
+                ],
+                "start_addr": 1818316815,
+                "variable_name": "Tensor_15"
+            },
+            "op_1": {
+                "data_type": [
+                    "int8",
+                    1
+                ],
+                "size": 3158016,
+                "shape": [
+                    1,
+                    96,
+                    128,
+                    257
+                ],
+                "start_addr": 1818353682,
+                "variable_name": "Tensor_18"
+            }
+        },
+        "op": "BatchedMatmul",
+        "out": {
+            "data_type": [
+                "int8",
+                1
+            ],
+            "size": 24672,
+            "shape": [
+                1,
+                96,
+                1,
+                257
+            ],
+            "start_addr": 1824669716,
+            "variable_name": "Tensor_20"
+        }
+    },
+    "Softmax_0": {
+        "dep": {
+            "op_0": {
+                "data_type": [
+                    "int8",
+                    1
+                ],
+                "size": 24672,
+                "shape": [
+                    1,
+                    96,
+                    1,
+                    257
+                ],
+                "start_addr": 1824669716,
+                "variable_name": "Tensor_20"
+            }
+        },
+        "op": "Softmax",
+        "out": {
+            "data_type": [
+                "int8",
+                1
+            ],
+            "size": 24672,
+            "shape": [
+                1,
+                96,
+                1,
+                257
+            ],
+            "start_addr": 1824669716,
+            "variable_name": "Tensor_20"
+        }
+    },
+    "BatchedMatmul_1": {
+        "dep": {
+            "op_0": {
+                "data_type": [
+                    "int8",
+                    1
+                ],
+                "size": 24672,
+                "shape": [
+                    1,
+                    96,
+                    1,
+                    257
+                ],
+                "start_addr": 1824669716,
+                "variable_name": "Tensor_20"
+            },
+            "op_1": {
+                "data_type": [
+                    "int8",
+                    1
+                ],
+                "size": 3158016,
+                "shape": [
+                    1,
+                    96,
+                    257,
+                    128
+                ],
+                "start_addr": 1821511699,
+                "variable_name": "Tensor_19"
+            }
+        },
+        "op": "BatchedMatmul",
+        "out": {
+            "data_type": [
+                "int8",
+                1
+            ],
+            "size": 12288,
+            "shape": [
+                1,
+                96,
+                1,
+                128
+            ],
+            "start_addr": 1824694389,
+            "variable_name": "Tensor_21"
+        }
+    },
+    "Transpose_3": {
+        "dep": {
+            "op_0": {
+                "data_type": [
+                    "int8",
+                    1
+                ],
+                "size": 12288,
+                "shape": [
+                    1,
+                    96,
+                    1,
+                    128
+                ],
+                "start_addr": 1824694389,
+                "variable_name": "Tensor_21"
+            }
+        },
+        "op": "Transpose",
+        "out": {
+            "data_type": [
+                "int8",
+                1
+            ],
+            "size": 12288,
+            "shape": [
+                1,
+                1,
+                96,
+                128
+            ],
+            "start_addr": 1824706678,
+            "variable_name": "Tensor_22"
+        }
+    },
+    "Reshape_3": {
+        "dep": {
+            "op_0": {
+                "data_type": [
+                    "int8",
+                    1
+                ],
+                "size": 12288,
+                "shape": [
+                    1,
+                    1,
+                    96,
+                    128
+                ],
+                "start_addr": 1824706678,
+                "variable_name": "Tensor_22"
+            }
+        },
+        "op": "Reshape",
+        "out": {
+            "data_type": [
+                "int8",
+                1
+            ],
+            "size": 12288,
+            "shape": [
+                1,
+                1,
+                12288
+            ],
+            "start_addr": 1824718967,
+            "variable_name": "Tensor_23"
+        }
+    },
+    "Matmul_3": {
+        "dep": {
+            "op_0": {
+                "data_type": [
+                    "int8",
+                    1
+                ],
+                "size": 12288,
+                "shape": [
+                    1,
+                    1,
+                    12288
+                ],
+                "start_addr": 1824718967,
+                "variable_name": "Tensor_23"
+            },
+            "op_1": {
+                "data_type": [
+                    "int8",
+                    1
+                ],
+                "size": 150994944,
+                "shape": [
+                    12288,
+                    12288
+                ],
+                "start_addr": 452984835,
+                "variable_name": "Tensor_3"
+            }
+        },
+        "op": "Matmul",
+        "out": {
+            "data_type": [
+                "int8",
+                1
+            ],
+            "size": 12288,
+            "shape": [
+                1,
+                1,
+                12288
+            ],
+            "start_addr": 1824731256,
+            "variable_name": "Tensor_24"
+        }
+    },
+    "LayerNorm_0": {
+        "dep": {
+            "op_0": {
+                "data_type": [
+                    "int8",
+                    1
+                ],
+                "size": 12288,
+                "shape": [
+                    1,
+                    1,
+                    12288
+                ],
+                "start_addr": 1824731256,
+                "variable_name": "Tensor_24"
+            }
+        },
+        "op": "LayerNorm",
+        "out": {
+            "data_type": [
+                "int8",
+                1
+            ],
+            "size": 12288,
+            "shape": [
+                1,
+                1,
+                12288
+            ],
+            "start_addr": 1824731256,
+            "variable_name": "Tensor_24"
+        }
+    },
+    "Matmul_4": {
+        "dep": {
+            "op_0": {
+                "data_type": [
+                    "int8",
+                    1
+                ],
+                "size": 12288,
+                "shape": [
+                    1,
+                    1,
+                    12288
+                ],
+                "start_addr": 1824731256,
+                "variable_name": "Tensor_24"
+            },
+            "op_1": {
+                "data_type": [
+                    "int8",
+                    1
+                ],
+                "size": 603979776,
+                "shape": [
+                    12288,
+                    49152
+                ],
+                "start_addr": 603979780,
+                "variable_name": "Tensor_4"
+            }
+        },
+        "op": "Matmul",
+        "out": {
+            "data_type": [
+                "int8",
+                1
+            ],
+            "size": 49152,
+            "shape": [
+                1,
+                1,
+                49152
+            ],
+            "start_addr": 1824743545,
+            "variable_name": "Tensor_25"
+        }
+    },
+    "GeLU_0": {
+        "dep": {
+            "op_0": {
+                "data_type": [
+                    "int8",
+                    1
+                ],
+                "size": 49152,
+                "shape": [
+                    1,
+                    1,
+                    49152
+                ],
+                "start_addr": 1824743545,
+                "variable_name": "Tensor_25"
+            }
+        },
+        "op": "GeLU",
+        "out": {
+            "data_type": [
+                "int8",
+                1
+            ],
+            "size": 49152,
+            "shape": [
+                1,
+                1,
+                49152
+            ],
+            "start_addr": 1824743545,
+            "variable_name": "Tensor_25"
+        }
+    },
+    "Matmul_5": {
+        "dep": {
+            "op_0": {
+                "data_type": [
+                    "int8",
+                    1
+                ],
+                "size": 49152,
+                "shape": [
+                    1,
+                    1,
+                    49152
+                ],
+                "start_addr": 1824743545,
+                "variable_name": "Tensor_25"
+            },
+            "op_1": {
+                "data_type": [
+                    "int8",
+                    1
+                ],
+                "size": 603979776,
+                "shape": [
+                    49152,
+                    12288
+                ],
+                "start_addr": 1207959557,
+                "variable_name": "Tensor_5"
+            }
+        },
+        "op": "Matmul",
+        "out": {
+            "data_type": [
+                "int8",
+                1
+            ],
+            "size": 12288,
+            "shape": [
+                1,
+                1,
+                12288
+            ],
+            "start_addr": 1824792698,
+            "variable_name": "Tensor_26"
+        }
+    },
+    "LayerNorm_1": {
+        "dep": {
+            "op_0": {
+                "data_type": [
+                    "int8",
+                    1
+                ],
+                "size": 12288,
+                "shape": [
+                    1,
+                    1,
+                    12288
+                ],
+                "start_addr": 1824792698,
+                "variable_name": "Tensor_26"
+            }
+        },
+        "op": "LayerNorm",
+        "out": {
+            "data_type": [
+                "int8",
+                1
+            ],
+            "size": 12288,
+            "shape": [
+                1,
+                1,
+                12288
+            ],
+            "start_addr": 1824792698,
+            "variable_name": "Tensor_26"
+        }
+    }
+}

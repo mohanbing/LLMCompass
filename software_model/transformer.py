@@ -725,19 +725,21 @@ if __name__ == "__main__":
     model_auto_regression = TransformerBlockAutoRegressionTP(
         d_model=12288,
         n_heads=96,
-        device_count=4,
-        data_type=data_type_dict["fp16"],
+        device_count=1,
+        data_type=data_type_dict["int8"],
     )
     _ = model_auto_regression(
-        Tensor([16, 1, 12288], data_type_dict["fp16"]),
+        Tensor([1, 1, 12288], data_type_dict["int8"]),
         256,
     )
 
     symbol_table_path = Path("symbol_table.json")
-    dep_graph_path = Path("dep_graph.json")
+    dep_graph_path = Path("dep_graph_gpt3_med.json")
     SymbolTable.dump_symbol_table_to_json(symbol_table_path)
     DependencyGraph.dump_graph_to_json(dep_graph_path)
+    total_params = DependencyGraph.get_learnable_parameters()
 
     print("symbol table dumped to: ", symbol_table_path)
     print("dep graph dumped to: ", dep_graph_path)
+    print(f"Matmul Learnable Parameter Count: {total_params}")
 
