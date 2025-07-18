@@ -61,7 +61,7 @@ class Reshape(Operator):
         self.input_shape = input.shape
         self.output_shape = output_shape
         output = Tensor(output_shape, self.data_type)
-        DependencyGraph.add_node_to_graph(output, [input], self.__class__.__name__)
+        DependencyGraph.add_node_to_graph(output, [input], self.__class__.__name__, self.name)
         return output
 
 
@@ -96,7 +96,7 @@ class Concat(Operator):
             + input1.shape[concat_dim + 1 :]
         )
         output = Tensor(self.output_shape, self.data_type)
-        DependencyGraph.add_node_to_graph(output, [input1, input2], self.__class__.__name__)
+        DependencyGraph.add_node_to_graph(output, [input1, input2], self.__class__.__name__, self.name)
         return output
 
 
@@ -123,5 +123,5 @@ class Transpose(Operator):
 
         self.output_shape = [self.input_shape[i] for i in permute]
         output = Tensor(self.output_shape, self.data_type)
-        DependencyGraph.add_node_to_graph(output, [input], self.__class__.__name__)
+        DependencyGraph.add_node_to_graph(output, [input], self.__class__.__name__, self.name)
         return output

@@ -63,6 +63,7 @@ class Tensor:
             idx = len(row_maj_strides) - 2
             while idx >=0:
                 row_maj_strides[idx] = row_maj_strides[idx + 1] * self.shape[idx + 1]
+                idx -= 1
 
             new_offset = 0
             for i, key in enumerate(keys):

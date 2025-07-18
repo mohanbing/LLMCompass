@@ -40,7 +40,7 @@ class BatchedMatmul(Operator):
         self.N = self.input2_shape[-1]
         self.output_shape = self.input1_shape[:-2] + [self.M, self.N]
         output = Tensor(self.output_shape, self.data_type)
-        DependencyGraph.add_node_to_graph(output, [input1, input2], self.__class__.__name__)
+        DependencyGraph.add_node_to_graph(output, [input1, input2], self.__class__.__name__, self.name)
         return output
 
     def roofline_model(self, pcb_module: Device):
@@ -127,6 +127,7 @@ class BatchedMatmul(Operator):
 
 class Matmul(Operator):
     __count=0
+    __learnable_parameters=0
 
     def __init__(self, data_type: DataType):
         super().__init__(0, 0, 0, 0, data_type)
@@ -159,8 +160,15 @@ class Matmul(Operator):
         self.flop_count = 2 * self.M * self.K * self.N
         self.io_count = self.M * self.K + self.K * self.N + self.M * self.N
         # print(f'{self.M}, {self.N}, {self.K}')
-        DependencyGraph.add_node_to_graph(output, [input1, input2], self.__class__.__name__)
+        product = 1
+        for x in input2.shape:
+            product *= x
+        DependencyGraph.add_node_to_graph(output, [input1, input2], self.__class__.__name__, self.name)
+        self.__class__.__learnable_parameters += product
         return output
+
+    def get_learnable_parameters(self):
+        return self.__class__.__learnable_parameters
 
     def roofline_model(self, pcb_module: Device):
         self.roofline_latency = max(

@@ -3,4 +3,4 @@ SlurmOutput/
 temp/
 .vscode/
 *.ncu-rep
-.llm_compass_env
+.llmcompass_env

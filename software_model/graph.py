@@ -10,8 +10,8 @@ class DependencyGraph:
     graph = {}
 
     @classmethod
-    def add_node_to_graph(cls, target: Tensor, dep_list:List[Tensor], op:str):
-        cls.graph[target.name] = dict(
+    def add_node_to_graph(cls, target: Tensor, dep_list:List[Tensor], op:str, op_name: str):
+        cls.graph[op_name] = dict(
             dep = {f"op_{op_c}":SymbolTable.table[dep.name] for op_c, dep in enumerate(dep_list)},
             op = op,
             out = SymbolTable.table[target.name]
@@ -21,6 +21,22 @@ class DependencyGraph:
     def dump_graph_to_json(cls, path:Path):
         with open(path, 'w') as fp:
             json.dump(cls.graph, fp)
+
+    @classmethod
+    def get_learnable_parameters(cls):
+        total_params = 0
+        for _, tensor_dict in cls.graph.items():
+            dep = tensor_dict["dep"]
+            op = tensor_dict["op"]
+            if op == "Matmul":
+                op1 = dep["op_1"]
+                op1_shape = op1["shape"]
+                prod = 1
+                for dim in op1_shape:
+                    prod *= dim
+                total_params += prod
+        
+        return total_params
     
     # @classmethod
     # def construct_wyvern_topology(cls, path:Path):

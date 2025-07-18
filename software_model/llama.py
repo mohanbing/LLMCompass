@@ -1,30 +1,25 @@
 from software_model.operators import (
     Operator,
     Reshape,
-    Concat,
     Transpose,
 )
-from software_model.matmul import Matmul, BatchedMatmul
+from software_model.matmul import Matmul
 from software_model.softmax import Softmax
-from software_model.layernorm import LayerNorm
 from software_model.gelu import GeLU
 
-from software_model.utils import Tensor, DataType, data_type_dict
-from software_model.communication_primitives import AllReduceMultiPCB
+from software_model.utils import Tensor, data_type_dict
 from software_model.graph import DependencyGraph
 from software_model.utils import SymbolTable
 
-from math import ceil
-from typing import List, Optional
+from typing import Optional
 from dataclasses import dataclass
-from hardware_model.system import System
 
 @dataclass
 class ModelArgs:
     dim: int = 4096
-    n_layers: int = 32
+    n_layers: int = 1
     n_heads: int = 32
-    n_kv_heads: Optional[int] = None
+    n_kv_heads: Optional[int] = 32
     vocab_size: int = 32000 # defined later by tokenizer
     multiple_of: int = 256  # make SwiGLU hidden layer size multiple of large power of 2
     ffn_dim_multiplier: Optional[float] = None
@@ -34,6 +29,7 @@ class ModelArgs:
     max_seq_len: int = 2048
 
 class RMSNorm(Operator):
+    __count = 0
     def __init__(self, dim: int, data_type, eps: float = 1e-6):
         """
         Initialize the RMSNorm normalization layer.
@@ -47,6 +43,8 @@ class RMSNorm(Operator):
             weight (nn.Parameter): Learnable scaling parameter.
 
         """
+
+        self.name = f"{self.__class__.__name__}_{RMSNorm.__count}"
         self.eps = eps
         self.weight = Tensor([dim])
         self.data_type = data_type
@@ -77,7 +75,7 @@ class RMSNorm(Operator):
         """
         # output = self._norm(x.float()).type_as(x)
         output = x
-        DependencyGraph.add_node_to_graph(output, [x], self.__class__.__name__)
+        DependencyGraph.add_node_to_graph(output, [x], self.__class__.__name__, self.name)
         return output
 
 class ColumnParallelLinear(Operator):
@@ -85,9 +83,9 @@ class ColumnParallelLinear(Operator):
         self.in_features = in_feat
         self.out_features = out_feat
         if bias:
-            self.weight_bias = Tensor([self.out_features, self.in_features+1], data_type)
+            self.weight_bias = Tensor([self.in_features+1, self.out_features], data_type)
         else:
-            self.weight_bias = Tensor([self.out_features, self.in_features], data_type)
+            self.weight_bias = Tensor([self.in_features, self.out_features], data_type)
         self.data_type = data_type
     
     def __call__ (self, input: Tensor) -> Tensor:
@@ -99,9 +97,9 @@ class RowParallelLinear(Operator):
         self.in_features = in_feat
         self.out_features = out_feat
         if bias:
-            self.weight_bias = Tensor([self.out_features, self.in_features+1], data_type)
+            self.weight_bias = Tensor([self.in_features+1, self.out_features], data_type)
         else:
-            self.weight_bias = Tensor([self.out_features, self.in_features], data_type)
+            self.weight_bias = Tensor([self.in_features, self.out_features], data_type)
         self.data_type = data_type
     
     def __call__ (self, input: Tensor) -> Tensor:
@@ -205,7 +203,8 @@ class Attention(Operator):
         # output = output.transpose(1, 2).contiguous().view(bsz, seqlen, -1)
         output = Transpose(data_type=self.data_type)(output, [0, 2, 1, 3])
         output = Reshape(data_type=self.data_type)(output, [bsz, seqlen, self.n_local_heads*self.head_dim])
-        return self.wo(output)
+        output = self.wo(output)
+        return output
 
 class FeedForward(Operator):
     def __init__(
@@ -314,13 +313,16 @@ if __name__ == "__main__":
     from pathlib import Path
     params = ModelArgs()
     model = LLAMA(params=params, data_type=data_type_dict["int8"])
-    x = Tensor([1, 50], data_type=data_type_dict["int8"])
+    x = Tensor([1, 100], data_type=data_type_dict["int8"])
     out = model(x, 0)
 
-    symbol_table_path = Path("symbol_table_llama.json")
-    dep_graph_path = Path("dep_graph_llama.json")
+    symbol_table_path = Path("symbol_table_llama_one_layer.json")
+    dep_graph_path = Path("dep_graph_llama_one_layer.json")
     SymbolTable.dump_symbol_table_to_json(symbol_table_path)
     DependencyGraph.dump_graph_to_json(dep_graph_path)
+    # total_params = Matmul(data_type_dict["int8"]).get_learnable_parameters()
+    total_params = DependencyGraph.get_learnable_parameters()
 
     print("symbol table dumped to: ", symbol_table_path)
     print("dep graph dumped to: ", dep_graph_path)
+    print(f"Matmul Learnable Parameter Count: {total_params}")
