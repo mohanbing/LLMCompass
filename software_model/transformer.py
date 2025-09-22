@@ -14,16 +14,17 @@ from software_model.communication_primitives import AllReduceMultiPCB
 from software_model.graph import DependencyGraph
 from software_model.utils import SymbolTable
 from math import ceil
-from typing import List
+from typing import List, Tuple
 from hardware_model.system import System
 
 
 class TransformerBlockInitComputationTP(Operator):
-    def __init__(self, d_model, n_heads, device_count, data_type: DataType):
+    def __init__(self, d_model, n_heads, d_head, device_count, data_type: DataType):
         super().__init__(0, 0, 0, 0, data_type)
         self.d_model = d_model
         self.n_heads = n_heads
         self.device_count = device_count
+        self.d_head = d_head
         # parameters per device
         d = d_model
         self.Wq = Tensor([d, d // device_count], data_type)
@@ -35,30 +36,70 @@ class TransformerBlockInitComputationTP(Operator):
         # operators per device
         # # multi-head attention
         self.Q_proj = Matmul(data_type)
+        self.Q_proj.set_core_device(0)
+
         self.K_proj = Matmul(data_type)
+        self.K_proj.set_core_device(1)
+
         self.V_proj = Matmul(data_type)
+        self.V_proj.set_core_device(2)
+
         self.Q_reshape = Reshape(data_type)
+        self.Q_reshape.set_core_device(0)
+
         self.K_reshape = Reshape(data_type)
+        self.K_reshape.set_core_device(1)
+
         self.V_reshape = Reshape(data_type)
+        self.V_reshape.set_core_device(2)
+
         self.Q_transpose = Transpose(data_type)
+        self.Q_transpose.set_core_device(0)
+
         self.K_transpose = Transpose(data_type)
+        self.K_transpose.set_core_device(1)
+
         self.V_transpose = Transpose(data_type)
+        self.V_transpose.set_core_device(2)
+
         self.Q_mul_K = BatchedMatmul(data_type)
+        self.Q_mul_K.set_core_device(0)
+
         self.A_softmax = Softmax(data_type)
+        self.A_softmax.set_core_device(0)
+
         self.A_mul_V = BatchedMatmul(data_type)
+        self.A_mul_V.set_core_device(2)
+
         self.H_transpose = Transpose(data_type)
+        self.H_transpose.set_core_device(2)
+
         self.H_reshape = Reshape(data_type)
+        self.H_reshape.set_core_device(2)
+
         self.H_matmul0 = Matmul(data_type)
+        self.H_matmul0.set_core_device(3)
+
         self.layer_norm0 = LayerNorm(data_type)
+        self.layer_norm0.set_core_device(3)
+
         self.allreduce_mha = AllReduceMultiPCB(data_type)
         # # feed-forward network
         self.H_matmul1 = Matmul(data_type)
+        self.H_matmul1.set_core_device(3)
+        
         self.H_gelu = GeLU(data_type)
+        self.H_gelu.set_core_device(3)
+
         self.H_matmul2 = Matmul(data_type)
+        self.H_matmul2.set_core_device(3)
+
         self.layer_norm1 = LayerNorm(data_type)
+        self.layer_norm1.set_core_device(3)
+
         self.allreduce_ffn = AllReduceMultiPCB(data_type)
 
-    def __call__(self, X: Tensor) -> Tensor:
+    def __call__(self, X: Tensor) -> Tuple[Tensor, Tensor, Tensor]:
         # b: batch size
         # s: sequence length
         # d: hidden dimension
@@ -67,7 +108,7 @@ class TransformerBlockInitComputationTP(Operator):
         assert d == self.d_model
         h = self.n_heads
         dev_cnt = self.device_count
-        d_h = d // h
+        d_h = self.d_head
 
         # multi-head attention
         Q = self.Q_proj(X, self.Wq)  # [b, s, d / dev_cnt]
@@ -80,10 +121,13 @@ class TransformerBlockInitComputationTP(Operator):
         Q_T = self.Q_transpose(Q, [0, 2, 1, 3])  # [b, h / dev_cnt, s, d_h]
         assert Q_T.shape == [b, h // dev_cnt, s, d_h]
         K_T = self.K_transpose(K, [0, 2, 3, 1])  # [b, h / dev_cnt, d_h, s]
+        K_T.set_desc("K_cache")
         assert K_T.shape == [b, h // dev_cnt, d_h, s]
         V_T = self.V_transpose(V, [0, 2, 1, 3])  # [b, h / dev_cnt, s, d_h]
+        V_T.set_desc("V_cache")
         assert V_T.shape == [b, h // dev_cnt, s, d_h]
         A = self.Q_mul_K(Q_T, K_T)  # [b, h / dev_cnt, s, s]
+        A.set_desc("A")
         assert A.shape == [b, h // dev_cnt, s, s]
         A_prob = self.A_softmax(A)
         H = self.A_mul_V(A_prob, V_T)  #  [b, h / dev_cnt, s, d_h]
@@ -110,292 +154,120 @@ class TransformerBlockInitComputationTP(Operator):
             H2 = self.allreduce_ffn(H2)
 
         assert H2.shape == [b, s, d]
-        return H2
-
-    def roofline_model(self, system: System):
-        device = system.device
-        interconnect = system.interconnect
-
-        qkv_latency = 3 * (
-            self.Q_proj.roofline_model(device) + device.compute_module.overhead.matmul
-        )
-        q_mul_k_latency = (
-            self.Q_mul_K.roofline_model(device) + device.compute_module.overhead.matmul
-        )
-        a_mul_v_latency = (
-            self.A_mul_V.roofline_model(device) + device.compute_module.overhead.matmul
-        )
-        h_matmul0_latency = (
-            self.H_matmul0.roofline_model(device)
-            + device.compute_module.overhead.matmul
-        )
-        h1_matmul1_latency = (
-            self.H_matmul1.roofline_model(device)
-            + device.compute_module.overhead.matmul
-        )
-        h2_matmul2_latency = (
-            self.H_matmul2.roofline_model(device)
-            + device.compute_module.overhead.matmul
-        )
-
-        matmul_total_latency = (
-            qkv_latency
-            + q_mul_k_latency
-            + a_mul_v_latency
-            + h_matmul0_latency
-            + h1_matmul1_latency
-            + h2_matmul2_latency
-        )
-
-        # normalization
-        softmax_latency = (
-            self.A_softmax.roofline_model(device)
-            + device.compute_module.overhead.softmax
-        )
-        layernorm_latency = (
-            self.layer_norm0.roofline_model(device)
-            + device.compute_module.overhead.layernorm
-        )
-
-        normlization_total_latency = softmax_latency + layernorm_latency * 2
-
-        # gelu
-        gelu_latency = (
-            self.H_gelu.roofline_model(device) + device.compute_module.overhead.gelu
-        )
-
-        # allreduce
-        if self.device_count > 1:
-            allreduce_latency = self.allreduce_mha.simulate(interconnect)
-            allreduce_total_latency = allreduce_latency * 2
-        else:
-            allreduce_total_latency = 0
-            allreduce_total_latency = 0
-
-        # others
-
-        # print
-        print("Roofline breakdown:")
-        print(
-            f"{qkv_latency}\n{q_mul_k_latency}\n{a_mul_v_latency}\n{h_matmul0_latency}\n{h1_matmul1_latency}\n{h2_matmul2_latency}\n{softmax_latency}\n{layernorm_latency}\n{layernorm_latency}\n{gelu_latency}\n{allreduce_latency}\n{allreduce_latency}\n"
-        )
-        self.roofline_log = f"{qkv_latency}, {q_mul_k_latency}, {a_mul_v_latency}, {h_matmul0_latency}, {h1_matmul1_latency}, {h2_matmul2_latency}, {softmax_latency}, {layernorm_latency}, {layernorm_latency}, {gelu_latency}, {allreduce_latency}, {allreduce_latency}"
-        print("total:")
-        print(
-            f"{matmul_total_latency}\n{normlization_total_latency}\n{gelu_latency}\n{allreduce_total_latency}\n"
-        )
-        self.roofline_latency = (
-            matmul_total_latency
-            + normlization_total_latency
-            + gelu_latency
-            + allreduce_total_latency
-        )
-        return self.roofline_latency
-
-    def compile_and_simulate(self, system: System, compile_mode: str):
-        device = system.device
-        interconnect = system.interconnect
-
-        # matmul
-        print("simulating qkv")
-        qkv_latency = 3 * (
-            self.Q_proj.compile_and_simulate(device, compile_mode)
-            + device.compute_module.overhead.matmul
-        )
-        print("simulating q_mul_k")
-        q_mul_k_latency = (
-            self.Q_mul_K.compile_and_simulate(device, compile_mode)
-            + device.compute_module.overhead.matmul
-        )
-        print("simulating a_mul_v")
-        a_mul_v_latency = (
-            self.A_mul_V.compile_and_simulate(device, compile_mode)
-            + device.compute_module.overhead.matmul
-        )
-        print("simulating h_matmul0")
-        h_matmul0_latency = (
-            self.H_matmul0.compile_and_simulate(device, compile_mode)
-            + device.compute_module.overhead.matmul
-        )
-        print("simulating h1_matmul1")
-        h1_matmul1_latency = (
-            self.H_matmul1.compile_and_simulate(device, compile_mode)
-            + device.compute_module.overhead.matmul
-        )
-        print("simulating h2_matmul2")
-        h2_matmul2_latency = (
-            self.H_matmul2.compile_and_simulate(device, compile_mode)
-            + device.compute_module.overhead.matmul
-        )
-        print("finish matmul simulation")
-
-        matmul_total_latency = (
-            qkv_latency
-            + q_mul_k_latency
-            + a_mul_v_latency
-            + h_matmul0_latency
-            + h1_matmul1_latency
-            + h2_matmul2_latency
-        )
-
-        # normalization
-        softmax_latency = (
-            self.A_softmax.compile_and_simulate(device, compile_mode)
-            + device.compute_module.overhead.softmax
-        )
-        layernorm_latency = (
-            self.layer_norm0.compile_and_simulate(device, compile_mode)
-            + device.compute_module.overhead.layernorm
-        )
-
-        normlization_total_latency = softmax_latency + layernorm_latency * 2
-
-        # gelu
-        gelu_latency = (
-            self.H_gelu.compile_and_simulate(device, compile_mode)
-            + device.compute_module.overhead.gelu
-        )
-
-        # allreduce
-        if self.device_count > 1:
-            allreduce_latency = self.allreduce_mha.simulate(interconnect)
-            allreduce_total_latency = allreduce_latency * 2
-        else:
-            allreduce_latency = 0
-            allreduce_total_latency = 0
-
-        # others
-
-        # print
-        # print("breakdown:")
-        # print(
-        #     f"{qkv_latency}\n{q_mul_k_latency}\n{a_mul_v_latency}\n{h_matmul0_latency}\n{h1_matmul1_latency}\n{h2_matmul2_latency}\n{softmax_latency}\n{layernorm_latency}\n{layernorm_latency}\n{gelu_latency}\n{allreduce_latency}\n{allreduce_latency}\n"
-        # )
-        # print("total:")
-        # print(
-        #     f"{matmul_total_latency}\n{normlization_total_latency}\n{gelu_latency}\n{allreduce_total_latency}\n"
-        # )
-        self.latency = (
-            matmul_total_latency
-            + normlization_total_latency
-            + gelu_latency
-            + allreduce_total_latency
-        )
-        self.simluate_log = f"{qkv_latency}, {q_mul_k_latency}, {a_mul_v_latency}, {h_matmul0_latency}, {h1_matmul1_latency}, {h2_matmul2_latency}, {softmax_latency}, {layernorm_latency}, {layernorm_latency}, {gelu_latency}, {allreduce_latency}, {allreduce_latency}"
-        return self.latency
-
-    def run_on_gpu(self):
-        # matmul
-        qkv_latency = (
-            self.Q_proj.run_on_gpu()  # - self.Q_proj.gpu_kernel_launch_overhead()
-        ) * 3
-        q_mul_k_latency = (
-            self.Q_mul_K.run_on_gpu()  # - self.Q_mul_K.gpu_kernel_launch_overhead()
-        )
-        a_mul_v_latency = (
-            self.A_mul_V.run_on_gpu()  # - self.A_mul_V.gpu_kernel_launch_overhead()
-        )
-        h_matmul0_latency = (
-            self.H_matmul0.run_on_gpu()  # - self.H_matmul0.gpu_kernel_launch_overhead()
-        )
-        h1_matmul1_latency = (
-            self.H_matmul1.run_on_gpu()  # - self.H_matmul1.gpu_kernel_launch_overhead()
-        )
-        h2_matmul2_latency = (
-            self.H_matmul2.run_on_gpu()  # - self.H_matmul2.gpu_kernel_launch_overhead()
-        )
-
-        matmul_total_latency = (
-            qkv_latency
-            + q_mul_k_latency
-            + a_mul_v_latency
-            + h_matmul0_latency
-            + h1_matmul1_latency
-            + h2_matmul2_latency
-        )
-
-        # normalization
-        softmax_latency = (
-            self.A_softmax.run_on_gpu()  # - self.A_softmax.gpu_kernel_launch_overhead()
-        )
-        layernorm_latency = (
-            self.layer_norm0.run_on_gpu()
-            - self.layer_norm0.gpu_kernel_launch_overhead()
-        )
-
-        normlization_total_latency = softmax_latency + layernorm_latency * 2
-
-        # gelu
-        gelu_latency = (
-            self.H_gelu.run_on_gpu()  # - self.H_gelu.gpu_kernel_launch_overhead()
-        )
-
-        # allreduce
-        allreduce_total_latency = 0
-
-        # others
-
-        # print
-        print("breakdown:")
-        print(
-            f"{qkv_latency}\n{q_mul_k_latency}\n{a_mul_v_latency}\n{h_matmul0_latency}\n{h1_matmul1_latency}\n{h2_matmul2_latency}\n{softmax_latency}\n{layernorm_latency}\n{layernorm_latency}\n{gelu_latency}\n"
-        )
-        print("total:")
-        print(
-            f"{matmul_total_latency}\n{normlization_total_latency}\n{gelu_latency}\n{allreduce_total_latency}\n"
-        )
-        self.latency_on_gpu = (
-            matmul_total_latency
-            + normlization_total_latency
-            + gelu_latency
-            + allreduce_total_latency
-        )
-        return self.latency_on_gpu
+        return H2, K_T, V_T
 
 
 class TransformerBlockAutoRegressionTP(Operator):
-    def __init__(self, d_model, n_heads, device_count, data_type: DataType):
+    def __init__(self, d_model, n_heads, d_head, device_count, data_type: DataType):
         super().__init__(0, 0, 0, 0, data_type)
         self.d_model = d_model
         self.n_heads = n_heads
+        self.d_head = d_head
         self.device_count = device_count
         # parameters per device
         d = d_model
         self.Wq = Tensor([d, d // device_count], data_type)
+        self.Wq.set_desc("Wq")
+
         self.Wk = Tensor([d, d // device_count], data_type)
+        self.Wk.set_desc("Wk")
+
         self.Wv = Tensor([d, d // device_count], data_type)
+        self.Wv.set_desc("Wv")
+        
         self.W0 = Tensor([d // device_count, d], data_type)
         self.W1 = Tensor([d, 4 * d // device_count], data_type)
         self.W2 = Tensor([4 * d // device_count, d], data_type)
         # operators per device
         # # multi-head attention
         self.Q_proj = Matmul(data_type)
+        self.Q_proj.set_desc("Q_proj")
+        self.Q_proj.set_core_device(0)
+
         self.K_proj = Matmul(data_type)
+        self.K_proj.set_desc("K_proj")
+        self.K_proj.set_core_device(1)
+
         self.V_proj = Matmul(data_type)
+        self.V_proj.set_desc("V_proj")
+        self.V_proj.set_core_device(2)
+
         self.Q_reshape = Reshape(data_type)
+        self.Q_reshape.set_desc("Q_reshape")
+        self.Q_reshape.set_core_device(0)
+
         self.K_reshape = Reshape(data_type)
+        self.K_reshape.set_desc("K_reshape")
+        self.K_reshape.set_core_device(1)
+
         self.V_reshape = Reshape(data_type)
+        self.V_reshape.set_desc("V_reshape")
+        self.V_reshape.set_core_device(2)
+
         self.Q_transpose = Transpose(data_type)
+        self.Q_transpose.set_desc("Q_transpose")
+        self.Q_transpose.set_core_device(0)
+
         self.K_transpose = Transpose(data_type)
+        self.K_transpose.set_desc("K_transpose")
+        self.K_transpose.set_core_device(1)
+
         self.V_transpose = Transpose(data_type)
+        self.V_transpose.set_desc("V_transpose")
+        self.V_transpose.set_core_device(2)
+
         self.K_concat = Concat(data_type)
+        self.K_concat.set_desc("K_concat")
+        self.K_concat.set_core_device(1)
+
         self.V_concat = Concat(data_type)
+        self.V_concat.set_desc("V_concat")
+        self.V_concat.set_core_device(2)
+
         self.Q_mul_K = BatchedMatmul(data_type)
+        self.Q_mul_K.set_desc("Q_mul_K")
+        self.Q_mul_K.set_core_device(0)
+
         self.A_softmax = Softmax(data_type)
+        self.A_softmax.set_desc("A_softmax")
+        self.A_softmax.set_core_device(0)
+
         self.A_mul_V = BatchedMatmul(data_type)
+        self.A_mul_V.set_desc("A_mul_V")
+        self.A_mul_V.set_core_device(2)
+
         self.H_transpose = Transpose(data_type)
+        self.H_transpose.set_desc("H_transpose")
+        self.H_transpose.set_core_device(2)
+
         self.H_reshape = Reshape(data_type)
+        self.H_reshape.set_desc("H_reshape")
+        self.H_reshape.set_core_device(2)
+
         self.H_matmul0 = Matmul(data_type)
+        self.H_matmul0.set_desc("H_matmul0")
+        self.H_matmul0.set_core_device(3)
+
         self.layer_norm0 = LayerNorm(data_type)
+        self.layer_norm0.set_core_device(3)
+
         self.allreduce_mha = AllReduceMultiPCB(data_type)
         # # feed-forward network
         self.H_matmul1 = Matmul(data_type)
+        self.H_matmul1.set_core_device(3)
+
         self.H_gelu = GeLU(data_type)
+        self.H_gelu.set_core_device(3)
+
         self.H_matmul2 = Matmul(data_type)
+        self.H_matmul2.set_core_device(3)
+
         self.layer_norm1 = LayerNorm(data_type)
+        self.layer_norm1.set_core_device(3)
+        
         self.allreduce_ffn = AllReduceMultiPCB(data_type)
 
-    def __call__(self, x: Tensor, seq_len: int) -> Tensor:
+    def __call__(self, x: Tensor, seq_len: int, K_cache:Tensor, V_cache:Tensor) -> Tensor:
         # b: batch size
         # s: sequence length
         # d: hidden dimension
@@ -405,11 +277,11 @@ class TransformerBlockAutoRegressionTP(Operator):
         s = seq_len
         h = self.n_heads
         dev_cnt = self.device_count
-        d_h = d // h
+        d_h = self.d_head
 
         # KV cache
-        K_cache = Tensor([b, h // dev_cnt, d_h, s], self.data_type)
-        V_cache = Tensor([b, h // dev_cnt, s, d_h], self.data_type)
+        # K_cache = Tensor([b, h // dev_cnt, d_h, s], self.data_type)
+        # V_cache = Tensor([b, h // dev_cnt, s, d_h], self.data_type)
 
         # multi-head attention
         q = self.Q_proj(x, self.Wq)  # [b, 1, d / dev_cnt]
@@ -710,36 +582,88 @@ class TransformerBlockAutoRegressionTP(Operator):
         return self.latency_on_gpu
 
 
-class LLMInitComputationTP:
-    def __init__(
-        self,
-        d_model,
-        n_heads,
-        n_layers,
-        device_count,
-    ) -> None:
-        pass
+class GPTModel:
+    def __init__(self, d_model, n_heads, d_head, n_layers, device_count, data_type):
+        self.d_model = d_model
+        self.n_heads = n_heads
+        self.d_head = d_head
+        self.n_layers = n_layers
+        self.device_count = device_count
+        self.data_type = data_type
+
+        self.blocks_init = [
+            TransformerBlockInitComputationTP(d_model, n_heads, d_head, device_count, data_type)
+            for _ in range(n_layers)
+        ]
+        self.blocks_decode = [
+            TransformerBlockAutoRegressionTP(d_model, n_heads, d_head, device_count, data_type)
+            for _ in range(n_layers)
+        ]
+        self.K_cache = [None] * n_layers
+        self.V_cache = [None] * n_layers
+
+        self.vocab_size = 50000
+        self.token_embedding = Tensor([self.vocab_size, d_model], data_type)
+
+        self.lm_head_weight = self.token_embedding 
+
+    def forward(self, x: Tensor, seq_len: int) -> Tensor:
+        h = x
+        for i, block in enumerate(self.blocks_decode):
+            h = block(h, seq_len, self.K_cache[i], self.V_cache[i])
+
+        # self.lm_head_weight = Transpose(data_type=self.data_type)(self.lm_head_weight, [1,0])
+        # logits = Matmul(self.data_type)(h, self.lm_head_weight)
+
+        return h
+
+    def prefill(self, prompt: Tensor):
+        h = prompt
+        for i, block in enumerate(self.blocks_init):
+            h, K_T, V_T = block(h)
+            self.K_cache[i] = K_T
+            self.V_cache[i] = V_T
+        return h
+
 
 if __name__ == "__main__":
     from pathlib import Path
-    model_auto_regression = TransformerBlockAutoRegressionTP(
-        d_model=12288,
-        n_heads=96,
-        device_count=1,
-        data_type=data_type_dict["int8"],
-    )
-    _ = model_auto_regression(
-        Tensor([1, 1, 12288], data_type_dict["int8"]),
-        256,
+
+    d_model = 12288
+    n_heads = 96
+    d_head = d_model//n_heads
+    n_layers = 1
+    device_count = 1
+    batch_size = 8
+    seq_len = 2048
+
+    model = GPTModel(
+        d_model=d_model,
+        n_heads=n_heads,
+        d_head=d_head,
+        n_layers=n_layers,
+        device_count=device_count,
+        data_type=data_type_dict["fp16"]
     )
 
+    
+    prompt = Tensor([batch_size, seq_len, d_model], data_type_dict["fp16"])
+    model.prefill(prompt=prompt)
+    dep_graph_path = Path("dep_graph_gpt3_175B_prefill_one_block.json")
+    total_prefill_params = DependencyGraph.get_learnable_parameters()
+    DependencyGraph.reset_and_dump_graph(dep_graph_path)
+
+    x = Tensor([batch_size, 1, d_model], data_type_dict["fp16"])
+    logits = model.forward(x, seq_len=seq_len)
+
+
     symbol_table_path = Path("symbol_table.json")
-    dep_graph_path = Path("dep_graph_gpt3_med.json")
+    dep_graph_path = Path("dep_graph_gpt3_175B_decode_one_block.json")
     SymbolTable.dump_symbol_table_to_json(symbol_table_path)
     DependencyGraph.dump_graph_to_json(dep_graph_path)
-    total_params = DependencyGraph.get_learnable_parameters()
+    total_decode_params = DependencyGraph.get_learnable_parameters()
 
     print("symbol table dumped to: ", symbol_table_path)
     print("dep graph dumped to: ", dep_graph_path)
-    print(f"Matmul Learnable Parameter Count: {total_params}")
-
+    print(f"Matmul (Prefill) Learnable Parameter Count: {total_prefill_params}")
+    print(f"Matmul (Decode) Learnable Parameter Count: {total_decode_params}")

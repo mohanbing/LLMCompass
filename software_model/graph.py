@@ -10,11 +10,14 @@ class DependencyGraph:
     graph = {}
 
     @classmethod
-    def add_node_to_graph(cls, target: Tensor, dep_list:List[Tensor], op:str, op_name: str):
+    def add_node_to_graph(cls, target: Tensor, dep_list:List[Tensor], op:str, op_name: str, op_desc: str = None, core:int = -1):
         cls.graph[op_name] = dict(
             dep = {f"op_{op_c}":SymbolTable.table[dep.name] for op_c, dep in enumerate(dep_list)},
             op = op,
-            out = SymbolTable.table[target.name]
+            out = SymbolTable.table[target.name],
+            op_desc = op_desc,
+            core = str(core),
+            chiplet = str(0)
         )
 
     @classmethod
@@ -37,6 +40,11 @@ class DependencyGraph:
                 total_params += prod
         
         return total_params
+    
+    @classmethod
+    def reset_and_dump_graph(cls, path:Path):
+        DependencyGraph.dump_graph_to_json(path=path)
+        DependencyGraph.graph.clear()
     
     # @classmethod
     # def construct_wyvern_topology(cls, path:Path):

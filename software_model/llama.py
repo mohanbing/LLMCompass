@@ -280,7 +280,7 @@ class TransformerBlock:
         return out
         
 
-class LLAMA(Operator):
+class LLaMA(Operator):
     def __init__(self, params: ModelArgs, data_type):
         super().__init__(0, 0, 0, 0, data_type)
         self.params = params
@@ -306,18 +306,19 @@ class LLAMA(Operator):
         for layer in self.layers:
             h = layer(h, start_pos)
         h = self.norm(h)
-        output = self.output(h)
+        # output = self.output(h)
+        output = h
         return output
 
 if __name__ == "__main__":
     from pathlib import Path
     params = ModelArgs()
-    model = LLAMA(params=params, data_type=data_type_dict["int8"])
+    model = LLaMA(params=params, data_type=data_type_dict["int8"])
     x = Tensor([1, 100], data_type=data_type_dict["int8"])
     out = model(x, 0)
 
-    symbol_table_path = Path("symbol_table_llama_one_layer.json")
-    dep_graph_path = Path("dep_graph_llama_one_layer.json")
+    symbol_table_path = Path("symbol_table_llama_one_block.json")
+    dep_graph_path = Path("dep_graph_llama_one_block.json")
     SymbolTable.dump_symbol_table_to_json(symbol_table_path)
     DependencyGraph.dump_graph_to_json(dep_graph_path)
     # total_params = Matmul(data_type_dict["int8"]).get_learnable_parameters()

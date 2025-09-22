@@ -28,7 +28,7 @@ class Softmax(Operator):
         self.computational_graph = self.ComputationalGraph(
             self.M, self.N, self.data_type
         )
-        DependencyGraph.add_node_to_graph(input, [input], self.__class__.__name__, self.name)
+        DependencyGraph.add_node_to_graph(input, [input], self.__class__.__name__, self.name, core=self.core_device)
         return input
 
     def print_latency(self):

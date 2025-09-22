@@ -40,7 +40,7 @@ class BatchedMatmul(Operator):
         self.N = self.input2_shape[-1]
         self.output_shape = self.input1_shape[:-2] + [self.M, self.N]
         output = Tensor(self.output_shape, self.data_type)
-        DependencyGraph.add_node_to_graph(output, [input1, input2], self.__class__.__name__, self.name)
+        DependencyGraph.add_node_to_graph(output, [input1, input2], self.__class__.__name__, self.name, self.desc, core=self.core_device)
         return output
 
     def roofline_model(self, pcb_module: Device):
@@ -163,7 +163,7 @@ class Matmul(Operator):
         product = 1
         for x in input2.shape:
             product *= x
-        DependencyGraph.add_node_to_graph(output, [input1, input2], self.__class__.__name__, self.name)
+        DependencyGraph.add_node_to_graph(output, [input1, input2], self.__class__.__name__, self.name, self.desc, core=self.core_device)
         self.__class__.__learnable_parameters += product
         return output
 

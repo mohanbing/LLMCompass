@@ -30,7 +30,7 @@ class GeLU(Operator):
         self.shape = input.shape
         self.M = size(input.shape[:])
         self.computational_graph = self.ComputationalGraph(self.M, self.data_type)
-        DependencyGraph.add_node_to_graph(input, [input], self.__class__.__name__, self.name)
+        DependencyGraph.add_node_to_graph(input, [input], self.__class__.__name__, self.name, core=self.core_device)
         return input
 
     def roofline_model(self, pcb_module: Device):

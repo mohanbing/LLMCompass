@@ -12,8 +12,9 @@ class SymbolTable:
     def create_entry(cls, t, reuse_t=None, offset=0):
         entry = {}
         entry["data_type"] = t.data_type
-        entry["size"] = t.size * t.data_type.word_size
+        entry["size"] = (t.size * t.data_type.word_size)//4
         entry["shape"] = t.shape
+        entry["tensor_desc"] = t.desc
 
         if reuse_t:
             entry["start_addr"] = cls.table[reuse_t.name]["start_addr"] + offset
@@ -34,6 +35,10 @@ class SymbolTable:
         with open(path, 'w') as fp:
             json.dump(cls.table, fp)
 
+    @classmethod
+    def update_tensor_desc(cls, name:str, desc:str):
+        cls.table[name]["tensor_desc"] = desc
+
 
 class DataType(NamedTuple):
     name:str
@@ -45,15 +50,20 @@ class Tensor:
     __count = 0
 
     def __init__(
-        self, shape: List, data_type=data_type_dict["fp16"]
+        self, shape: List, data_type=data_type_dict["fp16"], reuse_t = None
     ) -> None:
         self.name = f"{self.__class__.__name__}_{Tensor.__count}"
         self.shape = shape
         self.size = size(shape)
         self.data_type = data_type
+        self.desc = ""
 
-        SymbolTable.create_entry(self)
+        SymbolTable.create_entry(self, reuse_t=reuse_t)
         Tensor.__count += 1
+    
+    def set_desc(self, desc:str):
+        self.desc = desc
+        SymbolTable.update_tensor_desc(self.name, self.desc)
 
     def __getitem__(self, keys):
         if isinstance(keys, tuple):

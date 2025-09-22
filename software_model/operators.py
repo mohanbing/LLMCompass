@@ -15,6 +15,7 @@ class Operator:
         data_type: DataType,
         gpu_device=None,
         verbose=True,
+        core_device:int = -1,
     ):
         self.flop_count = flop_count
         self.load_count = load_count
@@ -33,6 +34,14 @@ class Operator:
         # run on gpu
         self.iterations = 50
         self.dependencies = []
+        self.desc = ""
+        self.core_device = core_device
+
+    def set_desc(self, desc:str):
+        self.desc = desc
+
+    def set_core_device(self, core_device:int):
+        self.core_device = core_device
 
     class mapping:
         pass
@@ -60,8 +69,9 @@ class Reshape(Operator):
         self.peak_memory_usage = 0
         self.input_shape = input.shape
         self.output_shape = output_shape
-        output = Tensor(output_shape, self.data_type)
-        DependencyGraph.add_node_to_graph(output, [input], self.__class__.__name__, self.name)
+        output = Tensor(output_shape, self.data_type, input)
+        output.set_desc(input.desc)
+        DependencyGraph.add_node_to_graph(output, [input], self.__class__.__name__, self.name, core=self.core_device)
         return output
 
 
@@ -96,7 +106,8 @@ class Concat(Operator):
             + input1.shape[concat_dim + 1 :]
         )
         output = Tensor(self.output_shape, self.data_type)
-        DependencyGraph.add_node_to_graph(output, [input1, input2], self.__class__.__name__, self.name)
+        output.set_desc(input1.desc + "_" + input2.desc)
+        DependencyGraph.add_node_to_graph(output, [input1, input2], self.__class__.__name__, self.name, core=self.core_device)
         return output
 
 
@@ -122,6 +133,7 @@ class Transpose(Operator):
         self.peak_memory_usage = input.size * 2
 
         self.output_shape = [self.input_shape[i] for i in permute]
-        output = Tensor(self.output_shape, self.data_type)
-        DependencyGraph.add_node_to_graph(output, [input], self.__class__.__name__, self.name)
+        output = Tensor(self.output_shape, self.data_type, input)
+        output.set_desc(input.desc)
+        DependencyGraph.add_node_to_graph(output, [input], self.__class__.__name__, self.name, core=self.core_device)
         return output
