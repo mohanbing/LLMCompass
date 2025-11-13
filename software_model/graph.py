@@ -10,15 +10,26 @@ class DependencyGraph:
     graph = {}
 
     @classmethod
-    def add_node_to_graph(cls, target: Tensor, dep_list:List[Tensor], op:str, op_name: str, op_desc: str = None, core:int = -1):
-        cls.graph[op_name] = dict(
-            dep = {f"op_{op_c}":SymbolTable.table[dep.name] for op_c, dep in enumerate(dep_list)},
-            op = op,
-            out = SymbolTable.table[target.name],
-            op_desc = op_desc,
-            core = str(core),
-            chiplet = str(0)
-        )
+    def add_node_to_graph(cls, target: Tensor, dep_list:List[Tensor], op:str, op_name: str, op_desc: str = None, core:int = -1, batched_matmul_details: dict = None):
+        if batched_matmul_details:
+            cls.graph[op_name] = dict(
+                dep = {f"op_{op_c}":SymbolTable.table[dep.name] for op_c, dep in enumerate(dep_list)},
+                op = op,
+                out = SymbolTable.table[target.name],
+                op_desc = op_desc,
+                core = str(core),
+                chiplet = str(0),
+                batched_matmul_offsets = batched_matmul_details,
+            )
+        else:
+            cls.graph[op_name] = dict(
+                dep = {f"op_{op_c}":SymbolTable.table[dep.name] for op_c, dep in enumerate(dep_list)},
+                op = op,
+                out = SymbolTable.table[target.name],
+                op_desc = op_desc,
+                core = str(core),
+                chiplet = str(0),
+            )
 
     @classmethod
     def dump_graph_to_json(cls, path:Path):
