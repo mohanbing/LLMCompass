@@ -1,5 +1,5 @@
 from utils import size, closest_factors
-from typing import List, Tuple, Union
+from typing import List, Optional
 from hardware_model.device import Device
 from software_model.utils import Tensor, DataType
 from software_model.graph import DependencyGraph
@@ -87,7 +87,7 @@ class Concat(Operator):
         self.output_shape = None
         Concat.__count += 1
 
-    def __call__(self, input1: Tensor, input2: Tensor, concat_dim: int) -> Tensor:
+    def __call__(self, input1: Tensor, input2: Tensor, concat_dim: int, output:Optional[Tensor] = None) -> Tensor:
         assert len(input1.shape) == len(input2.shape)
         for i in range(len(input1.shape)):
             if i != concat_dim:
@@ -105,7 +105,13 @@ class Concat(Operator):
             + [input1.shape[concat_dim] + input2.shape[concat_dim]]
             + input1.shape[concat_dim + 1 :]
         )
-        output = Tensor(self.output_shape, self.data_type)
+
+        if output:
+            assert output.shape == self.output_shape
+            output = Tensor(shape=output.shape, data_type=output.data_type, reuse_t=output)
+        else:
+            output = Tensor(self.output_shape, self.data_type)
+        
         output.set_desc(input1.desc + "_" + input2.desc)
         DependencyGraph.add_node_to_graph(output, [input1, input2], self.__class__.__name__, self.name, core=self.core_device)
         return output

@@ -138,6 +138,7 @@ class Matmul(Operator):
         self.look_up_table = None
         self.best_mapping = None
         self.batched_matmul_details = None
+        self.sharded_matmul_details = None
         Matmul.__count += 1
 
     def __call__(self, input1: Tensor, input2: Tensor, output: Tensor = None) -> Tensor:
@@ -171,7 +172,13 @@ class Matmul(Operator):
         product = 1
         for x in input2.shape:
             product *= x
-        DependencyGraph.add_node_to_graph(output, [input1, input2], self.__class__.__name__, self.name, self.desc, core=self.core_device, batched_matmul_details=self.batched_matmul_details)
+        DependencyGraph.add_node_to_graph(output, [input1, input2], self.__class__.__name__, 
+                                          self.name, 
+                                          self.desc, 
+                                          core=self.core_device, 
+                                          batched_matmul_details=self.batched_matmul_details,
+                                          sharded_matmul_details=self.sharded_matmul_details)
+        
         self.__class__.__learnable_parameters += product
         return output
 

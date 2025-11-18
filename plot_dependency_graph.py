@@ -4,7 +4,7 @@ from pathlib import Path
 
 
 G = graphviz.Digraph(format="png", node_attr={'color': 'lightblue2', 'style': 'filled'})
-path = Path("dep_graph_gpt3_small_decode_one_block.json")
+path = Path("/home/amohan2/Wyvern/LLMCompass/new_tiny_decode.json")
 colors = ['red', 'blue', 'green', 'purple', 'black']
 color_index = 0
 
@@ -83,4 +83,4 @@ def construct_graph(dep_graph:dict):
     
 
 construct_graph(dep_graph)
-G.render("dep_graph_gpt3")
+G.render("tiny")
