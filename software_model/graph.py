@@ -35,6 +35,7 @@ class DependencyGraph:
                 op_desc = op_desc,
                 core = str(core),
                 chiplet = str(0),
+                sharded_matmul_offsets = sharded_matmul_details
             )
 
     @classmethod

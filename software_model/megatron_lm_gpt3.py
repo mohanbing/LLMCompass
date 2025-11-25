@@ -199,6 +199,12 @@ class TransformerBlockAutoRegressionTP(Operator):
         self.H_matmul0 = []
         self.layer_norm0 = []
 
+        self.allreduce_mha = []
+        self.H_matmul1 = []
+        self.H_gelu = []
+        self.H_matmul2 = []
+        self.layer_norm1 = []
+
         for device_id in range(device_count):
             base_device_id = device_id * device_count_sz
 
@@ -276,21 +282,29 @@ class TransformerBlockAutoRegressionTP(Operator):
             layer_norm0_i.set_core_device(H_matmul0_i.core_device)
             self.layer_norm0.append(layer_norm0_i)
 
-            self.allreduce_mha = AllReduceMultiPCB(data_type)
+            allreduce_mha_i = AllReduceMultiPCB(data_type)
+            allreduce_mha_i.set_core_device(H_matmul0_i.core_device)
+            self.allreduce_mha.append(allreduce_mha_i)
+
             # # feed-forward network
-            self.H_matmul1 = Matmul(data_type)
-            self.H_matmul1.set_core_device(5)
+            H_matmul1_i = Matmul(data_type)
+            H_matmul1_i.set_core_device(H_matmul0_i.core_device)
+            self.H_matmul1.append(H_matmul1_i)
 
-            self.H_gelu = GeLU(data_type)
-            self.H_gelu.set_core_device(5)
+            H_gelu_i = GeLU(data_type)
+            H_gelu_i.set_core_device(H_matmul1_i.core_device)
+            self.H_gelu.append(H_gelu_i)
 
-            self.H_matmul2 = Matmul(data_type)
-            self.H_matmul2.set_core_device(6)
+            H_matmul2_i = Matmul(data_type)
+            H_matmul2_i.set_core_device(H_gelu_i.core_device)
+            self.H_matmul2.append(H_matmul2_i)
 
-            self.layer_norm1 = LayerNorm(data_type)
-            self.layer_norm1.set_core_device(6)
+            layer_norm1_i = LayerNorm(data_type)
+            layer_norm1_i.set_core_device(H_matmul2_i.core_device)
+            self.layer_norm1.append(layer_norm1_i)
         
         self.allreduce_ffn = AllReduceMultiPCB(data_type)
+        self.allreduce_ffn.set_core_device((device_count * device_count_sz) - 1)
 
     def __call__(self, x: Tensor, seq_len: int, K_cache:Tensor, V_cache:Tensor) -> Tensor:
         # b: batch size
@@ -359,6 +373,8 @@ class TransformerBlockAutoRegressionTP(Operator):
             assert v_offset >= 0
 
             self.Q_proj[device_id].sharded_matmul_details = {
+                "desc" : "Q_proj",
+                "device_id" : device_id,
                 x.name : {
                     "base_addr" : SymbolTable.get_base_address(x),
                     "offset": 0,
@@ -374,6 +390,8 @@ class TransformerBlockAutoRegressionTP(Operator):
             }
 
             self.K_proj[device_id].sharded_matmul_details = {
+                "desc" : "K_proj",
+                "device_id" : device_id,
                 x.name : {
                     "base_addr" : SymbolTable.get_base_address(x),
                     "offset": 0,
@@ -389,6 +407,8 @@ class TransformerBlockAutoRegressionTP(Operator):
             }
 
             self.V_proj[device_id].sharded_matmul_details = {
+                "desc" : "V_proj",
+                "device_id" : device_id,
                 x.name : {
                     "base_addr" : SymbolTable.get_base_address(x),
                     "offset": 0,
@@ -457,6 +477,7 @@ class TransformerBlockAutoRegressionTP(Operator):
                 q_mul_k_single_matmul = Matmul(self.V_concat[device_id].data_type)
                 q_mul_k_single_matmul.set_core_device(target_core_id)
                 q_mul_k_single_matmul.batched_matmul_details = {
+                    "device_id" : device_id,
                     "inner_batch_id" : i,
                     q_T.name : {
                         "base_addr" : SymbolTable.get_base_address(q_T),
@@ -490,6 +511,7 @@ class TransformerBlockAutoRegressionTP(Operator):
                 a_mul_v_single_matmul = Matmul(self.A_mul_V.data_type)
                 a_mul_v_single_matmul.set_core_device(target_core_id)
                 a_mul_v_single_matmul.batched_matmul_details = {
+                    "device_id" : device_id,
                     "inner_batch_id" : i,
                     a_prob.name : {
                         "base_addr" : SymbolTable.get_base_address(a_prob),
@@ -523,15 +545,15 @@ class TransformerBlockAutoRegressionTP(Operator):
         
             # h0 = self.A_mul_V(a_prob, V_T)  #  [b, h / dev_cnt, 1, d_h]
             assert h0.shape == [b, h // dev_cnt, 1, d_h]
-            self.H_transpose.set_core_device(all_reduce_obj.core_device)
-            h0 = self.H_transpose(h0, [0, 2, 1, 3])  #  [b, 1, h / dev_cnt, d_h]
+            self.H_transpose[device_id].set_core_device(all_reduce_obj.core_device)
+            h0 = self.H_transpose[device_id](h0, [0, 2, 1, 3])  #  [b, 1, h / dev_cnt, d_h]
             assert h0.shape == [b, 1, h // dev_cnt, d_h]
 
-            self.H_reshape.set_core_device(all_reduce_obj.core_device)
-            h0 = self.H_reshape(h0, [b, 1, d // dev_cnt])
+            self.H_reshape[device_id].set_core_device(all_reduce_obj.core_device)
+            h0 = self.H_reshape[device_id](h0, [b, 1, d // dev_cnt])
             assert h0.shape == [b, 1, d // dev_cnt]
 
-            self.H_matmul0.set_core_device(all_reduce_obj.core_device)
+            self.H_matmul0[device_id].set_core_device(all_reduce_obj.core_device)
 
             # divides self.W0 row-parallel 
             W0_i = self.W0[start_idx:end_idx, :]
@@ -545,7 +567,9 @@ class TransformerBlockAutoRegressionTP(Operator):
             assert h0_offset >= 0
             assert h0_matmul_out_i_offset >= 0
 
-            self.H_matmul0.sharded_matmul_details = {
+            self.H_matmul0[device_id].sharded_matmul_details = {
+                "desc" : "H_matmul0",
+                "device_id" : device_id,
                 h0.name : {
                     "base_addr" : SymbolTable.get_base_address(h0_out),
                     "offset": h0_offset,
@@ -560,26 +584,62 @@ class TransformerBlockAutoRegressionTP(Operator):
                 }
             }
 
-            out = self.H_matmul0(h0, self.W0, h0_matmul_out_i)  #  [b, 1, d]
+            out = self.H_matmul0[device_id](h0, self.W0, h0_matmul_out_i)  #  [b, 1, d]
             assert out.shape == [b, 1, d]
 
-            self.layer_norm0.set_core_device(all_reduce_obj.core_device)
-            out = self.layer_norm0(out)
+            self.layer_norm0[device_id].set_core_device(all_reduce_obj.core_device)
+            out = self.layer_norm0[device_id](out)
             assert out.shape == [b, 1, d]
 
             all_h0_matmul_out.append(out)
 
+        h1_matmul_out = Tensor([b, 1, 4* d])
+        h2_matmul_out = Tensor([4, b, 1, d])
         for device_id in range(dev_cnt):
+            start_idx = device_id * ((4 * self.d_model) // dev_cnt)
+            end_idx = (device_id + 1) * ((4 * self.d_model) // dev_cnt)
+
             this_core_dep_tensors = []
+
             for idx, tensor in enumerate(all_h0_matmul_out):
                 if idx != device_id:
                     this_core_dep_tensors.append(tensor)
             
-            h0 = self.allreduce_mha(this_core_dep_tensors)
+            h0 = self.allreduce_mha[device_id](this_core_dep_tensors)
 
             # feed-forward network
-            self.H_matmul1.set_core_device(min(self.layer_norm0.core_device + 1, 31))
-            h1 = self.H_matmul1(h0, self.W1)  # [b, 1, 4 * d / dev_cnt]
+
+            W1_i = self.W1[:, :, start_idx:end_idx]
+            h0_i = h0_matmul_out[device_id, :, :, :]
+            h1_matmul_out_i = h1_matmul_out[:, :, start_idx:end_idx]
+
+            W1_offset = SymbolTable.get_base_address(W1_i) - SymbolTable.get_base_address(self.W1)
+            h0_offset = SymbolTable.get_base_address(h0_i) - SymbolTable.get_base_address(h0_matmul_out)
+            h1_matmul_out_i_offset = SymbolTable.get_base_address(h1_matmul_out_i) - SymbolTable.get_base_address(h1_matmul_out)
+
+            assert W1_offset >= 0
+            assert h0_offset >= 0
+            assert h1_matmul_out_i_offset >= 0
+
+            self.H_matmul1.sharded_matmul_details = {
+                "desc" : "H_matmul1",
+                "device_id" : device_id,
+                h0_i.name : {
+                    "base_addr" : SymbolTable.get_base_address(h0_matmul_out),
+                    "offset": h0_offset,
+                },
+                W1_i.name : {
+                    "base_addr" : SymbolTable.get_base_address(self.W1),
+                    "offset": W1_offset,
+                },
+                h1_matmul_out_i.name : {
+                    "base_addr" : SymbolTable.get_base_address(h1_matmul_out),
+                    "offset": h1_matmul_out_i_offset,
+                }
+            }
+
+            self.H_matmul1.set_core_device(min(self.layer_norm0[device_id].core_device + 1, 31))
+            h1 = self.H_matmul1(h0_i, W1_i, h1_matmul_out_i)  # [b, 1, 4 * d / dev_cnt]
             assert h1.shape == [b, 1, 4 * d // dev_cnt]
 
             self.H_gelu.set_core_device(self.H_matmul1.core_device)
