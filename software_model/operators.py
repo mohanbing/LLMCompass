@@ -143,3 +143,28 @@ class Transpose(Operator):
         output.set_desc(input.desc)
         DependencyGraph.add_node_to_graph(output, [input], self.__class__.__name__, self.name, core=self.core_device)
         return output
+    
+
+class ElementWiseAddition(Operator):
+    __count=0
+
+    def __init__(self, data_type: DataType):
+        super().__init__(0, 0, 0, 0, data_type)
+        self.name = f"{self.__class__.__name__}_{ElementWiseAddition.__count}"
+        self.input_shape = None
+        self.output_shape = None
+        ElementWiseAddition.__count += 1
+
+    def __call__(self, input1: Tensor, input2: Tensor, output: Optional[Tensor] = None) -> Tensor:
+        assert input1.shape == input2.shape
+        self.input_shape = input1.shape
+        self.output_shape = self.input_shape
+
+        if output:
+            DependencyGraph.add_node_to_graph(output, [input1, input2], self.__class__.__name__, self.name, core=self.core_device)
+            return output
+        else:
+            output = Tensor(self.output_shape, self.data_type)
+
+        DependencyGraph.add_node_to_graph(output, [input1, input2], self.__class__.__name__, self.name, core=self.core_device)
+        return output

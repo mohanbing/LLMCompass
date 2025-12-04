@@ -102,6 +102,21 @@ class AllReduceMultiPCB(CommunicationPrimitive):
         else:
             raise NotImplementedError
         return self.latency
+    
+class AllGather(CommunicationPrimitive):
+    __count = 0
+    def __init__(self, data_type: DataType) -> None:
+        super().__init__(data_type)
+        self.name = f"{self.__class__.__name__}_{AllGather.__count}"
+        AllGather.__count += 1
+
+    def __call__(self, tensors: List[Tensor]) -> Any:
+        assert tensors[0].data_type == self.data_type
+        b, _, m, n = tensors[0].shape
+        target_tensor_shape = [b, len(tensors), m, n]
+        target_tensor = Tensor(target_tensor_shape, tensors[0].data_type, reuse_t=tensors[0])
+        DependencyGraph.add_node_to_graph(target_tensor, tensors, self.__class__.__name__, self.name, core=self.core_device)
+        return target_tensor
 
 
 # class P2P:

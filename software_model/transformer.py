@@ -234,36 +234,36 @@ class TransformerBlockAutoRegressionTP(Operator):
 
         self.A_mul_V = BatchedMatmul(data_type)
         self.A_mul_V.set_desc("A_mul_V")
-        self.A_mul_V.set_core_device(4)
+        self.A_mul_V.set_core_device(3)
 
         self.H_transpose = Transpose(data_type)
         self.H_transpose.set_desc("H_transpose")
-        self.H_transpose.set_core_device(4)
+        self.H_transpose.set_core_device(3)
 
         self.H_reshape = Reshape(data_type)
         self.H_reshape.set_desc("H_reshape")
-        self.H_reshape.set_core_device(4)
+        self.H_reshape.set_core_device(3)
 
         self.H_matmul0 = Matmul(data_type)
         self.H_matmul0.set_desc("H_matmul0")
-        self.H_matmul0.set_core_device(5)
+        self.H_matmul0.set_core_device(3)
 
         self.layer_norm0 = LayerNorm(data_type)
-        self.layer_norm0.set_core_device(5)
+        self.layer_norm0.set_core_device(3)
 
         self.allreduce_mha = AllReduceMultiPCB(data_type)
         # # feed-forward network
         self.H_matmul1 = Matmul(data_type)
-        self.H_matmul1.set_core_device(6)
+        self.H_matmul1.set_core_device(3)
 
         self.H_gelu = GeLU(data_type)
-        self.H_gelu.set_core_device(6)
+        self.H_gelu.set_core_device(3)
 
         self.H_matmul2 = Matmul(data_type)
-        self.H_matmul2.set_core_device(7)
+        self.H_matmul2.set_core_device(3)
 
         self.layer_norm1 = LayerNorm(data_type)
-        self.layer_norm1.set_core_device(7)
+        self.layer_norm1.set_core_device(3)
         
         self.allreduce_ffn = AllReduceMultiPCB(data_type)
 
@@ -629,13 +629,13 @@ class GPTModel:
 if __name__ == "__main__":
     from pathlib import Path
 
-    d_model = 128
-    n_heads = 4
+    d_model = 1536
+    n_heads = 24
     d_head = d_model//n_heads
     n_layers = 1
     device_count = 1
     batch_size = 1
-    seq_len = 1024
+    seq_len = 2048
 
     model = GPTModel(
         d_model=d_model,
@@ -649,7 +649,7 @@ if __name__ == "__main__":
     
     prompt = Tensor([batch_size, seq_len, d_model], data_type_dict["fp16"])
     model.prefill(prompt=prompt)
-    dep_graph_path = Path("tiny_decode.json")
+    dep_graph_path = Path("dep_graph_gpt3_large_prefill_one_block.json")
     total_prefill_params = DependencyGraph.get_learnable_parameters()
     DependencyGraph.reset_and_dump_graph(dep_graph_path)
 
@@ -658,7 +658,7 @@ if __name__ == "__main__":
 
 
     symbol_table_path = Path("symbol_table.json")
-    dep_graph_path = Path("tiny_decode.json")
+    dep_graph_path = Path("dep_graph_gpt3_large_decode_one_block.json")
     SymbolTable.dump_symbol_table_to_json(symbol_table_path)
     DependencyGraph.dump_graph_to_json(dep_graph_path)
     total_decode_params = DependencyGraph.get_learnable_parameters()

@@ -21,6 +21,7 @@ class SymbolTable:
 
         if reuse_t:
             entry["start_addr"] = cls.table[reuse_t.name]["start_addr"] + offset
+            entry["tensor_desc"] = reuse_t.desc
 
         else:
             entry["start_addr"] = SymbolTable.addr + 1
@@ -118,6 +119,7 @@ class Tensor:
                     new_offset += key * row_maj_strides[i]
 
             new_tensor = Tensor(new_shape, data_type=self.data_type, name=self.name)
+            new_tensor.desc = self.desc
             SymbolTable.create_entry(new_tensor, reuse_t=self, offset=new_offset)
             return new_tensor
 

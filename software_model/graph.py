@@ -24,19 +24,28 @@ class DependencyGraph:
                 op_desc = op_desc,
                 core = str(core),
                 chiplet = str(0),
-                batched_matmul_offsets = batched_matmul_details,
-                sharded_matmul_offsets = sharded_matmul_details
+                batched_matmul_offsets = batched_matmul_details
             )
         else:
-            cls.graph[op_name] = dict(
-                dep = {f"op_{op_c}":SymbolTable.table[dep.name] for op_c, dep in enumerate(dep_list)},
-                op = op,
-                out = SymbolTable.table[target.name],
-                op_desc = op_desc,
-                core = str(core),
-                chiplet = str(0),
-                sharded_matmul_offsets = sharded_matmul_details
-            )
+            if sharded_matmul_details:
+                cls.graph[op_name] = dict(
+                    dep = {f"op_{op_c}":SymbolTable.table[dep.name] for op_c, dep in enumerate(dep_list)},
+                    op = op,
+                    out = SymbolTable.table[target.name],
+                    op_desc = op_desc,
+                    core = str(core),
+                    chiplet = str(0),
+                    sharded_matmul_offsets = sharded_matmul_details
+                )
+            else:
+                cls.graph[op_name] = dict(
+                    dep = {f"op_{op_c}":SymbolTable.table[dep.name] for op_c, dep in enumerate(dep_list)},
+                    op = op,
+                    out = SymbolTable.table[target.name],
+                    op_desc = op_desc,
+                    core = str(core),
+                    chiplet = str(0)
+                )
 
     @classmethod
     def dump_graph_to_json(cls, path:Path):
