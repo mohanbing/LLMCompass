@@ -4,6 +4,7 @@ from software_model.operators import (
     Concat,
     Transpose,
     ElementWiseAddition,
+    BarrierSync
 )
 from software_model.matmul import Matmul, BatchedMatmul
 from software_model.softmax import Softmax
@@ -598,13 +599,17 @@ class TransformerBlockAutoRegressionTP(Operator):
             all_h0_matmul_out.append(out)
 
         # all-reduce all [b, 1, d] tensors from other devices
-        h0 = h0_matmul_out[0]
+        h0 = all_h0_matmul_out[0]
         for idx, tensor in enumerate(all_h0_matmul_out):
             obj = ElementWiseAddition(self.data_type)
             if idx != 0:
                 obj.set_core_device(self.device_count_sz-1)
                 out = obj(h0, tensor, h0)
+                h0 = out
 
+        # synchronizes all cores/devices at this point
+        _ = BarrierSync(self.data_type)()
+        
         h1_matmul_out = Tensor([b, 1, 4 * d])
         h2_matmul_out = [Tensor([b, 1, d]) for _ in range(dev_cnt)]
 
@@ -685,12 +690,13 @@ class TransformerBlockAutoRegressionTP(Operator):
             assert h2.shape == [b, 1, d]
         
         # all-reduce all [b, 1, d] tensors from other devices
-        h2 = h2_matmul_out[0]
+        h2 = all_h2_matmul_out[0]
         for idx, tensor in enumerate(all_h2_matmul_out):
             obj = ElementWiseAddition(self.data_type)
             if idx != 0:
                 obj.set_core_device(self.device_count_sz-1)
                 out = obj(h2, tensor, h2)
+                h2 = out
 
         return out
 

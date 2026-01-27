@@ -28,54 +28,69 @@ class TransformerBlockInitComputationTP(Operator):
         # parameters per device
         d = d_model
         self.Wq = Tensor([d, d // device_count], data_type)
+        self.Wq.set_desc("Wq")
+
         self.Wk = Tensor([d, d // device_count], data_type)
+        self.Wk.set_desc("Wk")
+
         self.Wv = Tensor([d, d // device_count], data_type)
+        self.Wv.set_desc("Wv")
+
         self.W0 = Tensor([d // device_count, d], data_type)
         self.W1 = Tensor([d, 4 * d // device_count], data_type)
         self.W2 = Tensor([4 * d // device_count, d], data_type)
         # operators per device
         # # multi-head attention
         self.Q_proj = Matmul(data_type)
+        self.Q_proj.set_desc("Q_proj")
         self.Q_proj.set_core_device(0)
 
         self.K_proj = Matmul(data_type)
+        self.K_proj.set_desc("K_proj")
         self.K_proj.set_core_device(1)
 
         self.V_proj = Matmul(data_type)
+        self.V_proj.set_desc("V_proj")
         self.V_proj.set_core_device(2)
 
         self.Q_reshape = Reshape(data_type)
+        self.Q_reshape.set_desc("Q_reshape")
         self.Q_reshape.set_core_device(0)
 
         self.K_reshape = Reshape(data_type)
+        self.K_reshape.set_desc("K_reshape")
         self.K_reshape.set_core_device(1)
 
         self.V_reshape = Reshape(data_type)
+        self.V_reshape.set_desc("V_reshape")
         self.V_reshape.set_core_device(2)
 
         self.Q_transpose = Transpose(data_type)
+        self.Q_transpose.set_desc("Q_transpose")
         self.Q_transpose.set_core_device(0)
 
         self.K_transpose = Transpose(data_type)
+        self.K_transpose.set_desc("K_transpose")
         self.K_transpose.set_core_device(1)
 
         self.V_transpose = Transpose(data_type)
+        self.V_transpose.set_desc("V_transpose")
         self.V_transpose.set_core_device(2)
 
         self.Q_mul_K = BatchedMatmul(data_type)
-        self.Q_mul_K.set_core_device(0)
+        self.Q_mul_K.set_core_device(3)
 
         self.A_softmax = Softmax(data_type)
-        self.A_softmax.set_core_device(0)
+        self.A_softmax.set_core_device(3)
 
         self.A_mul_V = BatchedMatmul(data_type)
-        self.A_mul_V.set_core_device(2)
+        self.A_mul_V.set_core_device(3)
 
         self.H_transpose = Transpose(data_type)
-        self.H_transpose.set_core_device(2)
+        self.H_transpose.set_core_device(3)
 
         self.H_reshape = Reshape(data_type)
-        self.H_reshape.set_core_device(2)
+        self.H_reshape.set_core_device(3)
 
         self.H_matmul0 = Matmul(data_type)
         self.H_matmul0.set_core_device(3)
@@ -306,9 +321,9 @@ class TransformerBlockAutoRegressionTP(Operator):
         a_prob = self.A_softmax(a)
         h0 = self.A_mul_V(a_prob, V_T)  #  [b, h / dev_cnt, 1, d_h]
         assert h0.shape == [b, h // dev_cnt, 1, d_h]
-        h0 = self.H_transpose(h0, [0, 2, 1, 3])  #  [b, 1, h / dev_cnt, d_h]
+        h0 = self.H_transpose(h0, [0, 2, 1, 3])  #  [b, 1, h / dev_cnt, d_h = d/h]
         assert h0.shape == [b, 1, h // dev_cnt, d_h]
-        h0 = self.H_reshape(h0, [b, 1, d // dev_cnt])
+        h0 = self.H_reshape(h0, [b, 1, d // dev_cnt]) # [b, 1, d / dev_cnt]
         assert h0.shape == [b, 1, d // dev_cnt]
         h0 = self.H_matmul0(h0, self.W0)  #  [b, 1, d]
         assert h0.shape == [b, 1, d]
@@ -629,12 +644,12 @@ class GPTModel:
 if __name__ == "__main__":
     from pathlib import Path
 
-    d_model = 1536
-    n_heads = 24
+    d_model = 768
+    n_heads = 12
     d_head = d_model//n_heads
     n_layers = 1
     device_count = 1
-    batch_size = 1
+    batch_size = 2
     seq_len = 2048
 
     model = GPTModel(
@@ -643,22 +658,22 @@ if __name__ == "__main__":
         d_head=d_head,
         n_layers=n_layers,
         device_count=device_count,
-        data_type=data_type_dict["fp16"]
+        data_type=data_type_dict["int8"]
     )
 
     
-    prompt = Tensor([batch_size, seq_len, d_model], data_type_dict["fp16"])
+    prompt = Tensor([batch_size, seq_len, d_model], data_type_dict["int8"])
     model.prefill(prompt=prompt)
-    dep_graph_path = Path("dep_graph_gpt3_large_prefill_one_block.json")
+    dep_graph_path = Path("dep_graph_gpt3_small_prefill_one_block.json")
     total_prefill_params = DependencyGraph.get_learnable_parameters()
     DependencyGraph.reset_and_dump_graph(dep_graph_path)
 
-    x = Tensor([batch_size, 1, d_model], data_type_dict["fp16"])
+    x = Tensor([batch_size, 1, d_model], data_type_dict["int8"])
     logits = model.forward(x, seq_len=seq_len)
 
 
     symbol_table_path = Path("symbol_table.json")
-    dep_graph_path = Path("dep_graph_gpt3_large_decode_one_block.json")
+    dep_graph_path = Path("dep_graph_gpt3_small_decode_one_block_int8.json")
     SymbolTable.dump_symbol_table_to_json(symbol_table_path)
     DependencyGraph.dump_graph_to_json(dep_graph_path)
     total_decode_params = DependencyGraph.get_learnable_parameters()

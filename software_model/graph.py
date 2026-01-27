@@ -1,6 +1,6 @@
 import json
 import pandas as pd
-from typing import List
+from typing import List, Optional
 from pathlib import Path
 
 from software_model.utils import Tensor
@@ -10,7 +10,7 @@ class DependencyGraph:
     graph = {}
 
     @classmethod
-    def add_node_to_graph(cls, target: Tensor, dep_list:List[Tensor], op:str, 
+    def add_node_to_graph(cls, target: Optional[Tensor], dep_list:Optional[List[Tensor]], op:str, 
                           op_name: str, op_desc: str = None, 
                           core:int = -1, 
                           batched_matmul_details: dict = None,
@@ -38,14 +38,24 @@ class DependencyGraph:
                     sharded_matmul_offsets = sharded_matmul_details
                 )
             else:
-                cls.graph[op_name] = dict(
-                    dep = {f"op_{op_c}":SymbolTable.table[dep.name] for op_c, dep in enumerate(dep_list)},
+                if (target is None) and (dep_list is None):
+                    cls.graph[op_name] = dict(
+                    dep = None,
                     op = op,
-                    out = SymbolTable.table[target.name],
+                    out = None,
                     op_desc = op_desc,
                     core = str(core),
                     chiplet = str(0)
                 )
+                else:
+                    cls.graph[op_name] = dict(
+                        dep = {f"op_{op_c}":SymbolTable.table[dep.name] for op_c, dep in enumerate(dep_list)},
+                        op = op,
+                        out = SymbolTable.table[target.name],
+                        op_desc = op_desc,
+                        core = str(core),
+                        chiplet = str(0)
+                    )
 
     @classmethod
     def dump_graph_to_json(cls, path:Path):

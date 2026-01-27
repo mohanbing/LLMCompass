@@ -161,10 +161,26 @@ class ElementWiseAddition(Operator):
         self.output_shape = self.input_shape
 
         if output:
-            DependencyGraph.add_node_to_graph(output, [input1, input2], self.__class__.__name__, self.name, core=self.core_device)
-            return output
+            assert output.shape == self.output_shape
+            new_output = Tensor(shape=output.shape, data_type=output.data_type, reuse_t=output)
+            DependencyGraph.add_node_to_graph(new_output, [input1, input2], self.__class__.__name__, self.name, core=self.core_device)
+            return new_output
         else:
             output = Tensor(self.output_shape, self.data_type)
 
         DependencyGraph.add_node_to_graph(output, [input1, input2], self.__class__.__name__, self.name, core=self.core_device)
         return output
+
+class BarrierSync(Operator):
+    __count = 0
+
+    def __init__(self, data_type: DataType):
+        super().__init__(0, 0, 0, 0, data_type)
+        self.name = f"{self.__class__.__name__}_{BarrierSync.__count}"
+        self.input_shape = None
+        self.output_shape = None
+        BarrierSync.__count += 1
+    
+    def __call__(self):
+        DependencyGraph.add_node_to_graph(None, None, self.__class__.__name__, self.name)
+        return None
