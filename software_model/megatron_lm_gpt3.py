@@ -466,6 +466,7 @@ class TransformerBlockAutoRegressionTP(Operator):
             
             # maps a core to the most recent tensor it produces
             most_recent_tensor = {}
+            all_out_tensors = []
             for i in range(start_head, end_head):
                 target_core_id = min(self.V_concat[device_id].core_device + 1 + (i%4), (device_id + 1) * self.device_count_sz - 1)
                 
@@ -536,13 +537,16 @@ class TransformerBlockAutoRegressionTP(Operator):
                 assert new_h0_out.shape == [b, 1, 1, d_h]
 
                 most_recent_tensor[a_mul_v_single_matmul.core_device] = new_h0_out
+                all_out_tensors.append(new_h0_out)
 
                 attn_head_core_ids.append(target_core_id)
                 max_used_core_id = max(max_used_core_id, target_core_id)
 
             # all-reduce only gathers data from the cores to which attention head was
             # mapped to
-            for _, tensor in most_recent_tensor.items():
+            # for _, tensor in most_recent_tensor.items():
+            #     all_h0.append(tensor)
+            for tensor in all_out_tensors:
                 all_h0.append(tensor)
 
             all_reduce_obj = AllReduceMultiPCB(self.V_concat[device_id].data_type)
@@ -576,7 +580,7 @@ class TransformerBlockAutoRegressionTP(Operator):
                 "device_id" : device_id,
                 h0.name : {
                     "base_addr" : SymbolTable.get_base_address(h0_out),
-                    "offset": h0_offset,
+                    "offset": h0_offset, 
                 },
                 W0_i.name : {
                     "base_addr" : SymbolTable.get_base_address(self.W0),
@@ -689,6 +693,7 @@ class TransformerBlockAutoRegressionTP(Operator):
 
             assert h2.shape == [b, 1, d]
         
+        _ = BarrierSync(self.data_type)()
         # all-reduce all [b, 1, d] tensors from other devices
         h2 = all_h2_matmul_out[0]
         for idx, tensor in enumerate(all_h2_matmul_out):
@@ -989,8 +994,8 @@ class GPTModel:
 if __name__ == "__main__":
     from pathlib import Path
 
-    d_model = 192
-    n_heads = 12
+    d_model = 1536
+    n_heads = 24
     d_head = d_model//n_heads
     n_layers = 1
     device_count = 4
@@ -1017,8 +1022,8 @@ if __name__ == "__main__":
     logits = model.forward(x, seq_len=seq_len)
 
     symbol_table_path = Path("symbol_table.json")
-    # dep_graph_path = Path("dep_graph_gpt3_small_decode_one_block.json")
-    dep_graph_path = Path("tiny_decode.json")
+    dep_graph_path = Path("dep_graph_gpt3_large_decode_one_block.json")
+    # dep_graph_path = Path("tiny_decode.json")
     SymbolTable.dump_symbol_table_to_json(symbol_table_path)
     DependencyGraph.dump_graph_to_json(dep_graph_path)
     total_decode_params = DependencyGraph.get_learnable_parameters()
