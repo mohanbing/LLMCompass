@@ -14,7 +14,8 @@ class DependencyGraph:
                           op_name: str, op_desc: str = None, 
                           core:int = -1, 
                           batched_matmul_details: dict = None,
-                          sharded_matmul_details: dict = None):
+                          sharded_matmul_details: dict = None,
+                          stride: int = 1):
         
         if batched_matmul_details:
             cls.graph[op_name] = dict(
@@ -24,7 +25,8 @@ class DependencyGraph:
                 op_desc = op_desc,
                 core = str(core),
                 chiplet = str(0),
-                batched_matmul_offsets = batched_matmul_details
+                batched_matmul_offsets = batched_matmul_details,
+                stride=stride
             )
         else:
             if sharded_matmul_details:
@@ -35,7 +37,8 @@ class DependencyGraph:
                     op_desc = op_desc,
                     core = str(core),
                     chiplet = str(0),
-                    sharded_matmul_offsets = sharded_matmul_details
+                    sharded_matmul_offsets = sharded_matmul_details,
+                    stride=stride
                 )
             else:
                 if (target is None) and (dep_list is None):
@@ -45,7 +48,8 @@ class DependencyGraph:
                     out = None,
                     op_desc = op_desc,
                     core = str(core),
-                    chiplet = str(0)
+                    chiplet = str(0),
+                    stride=stride
                 )
                 else:
                     cls.graph[op_name] = dict(
@@ -54,7 +58,8 @@ class DependencyGraph:
                         out = SymbolTable.table[target.name],
                         op_desc = op_desc,
                         core = str(core),
-                        chiplet = str(0)
+                        chiplet = str(0),
+                        stride=stride
                     )
 
     @classmethod
