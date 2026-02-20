@@ -73,7 +73,7 @@ class DependencyGraph:
         for _, tensor_dict in cls.graph.items():
             dep = tensor_dict["dep"]
             op = tensor_dict["op"]
-            if op == "Matmul":
+            if op == "Matmul" or op == "Conv2d":
                 op1 = dep["op_1"]
                 op1_shape = op1["shape"]
                 prod = 1

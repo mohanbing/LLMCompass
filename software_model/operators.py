@@ -184,3 +184,17 @@ class BarrierSync(Operator):
     def __call__(self):
         DependencyGraph.add_node_to_graph(None, None, self.__class__.__name__, self.name)
         return None
+    
+class Sequential(Operator):
+    __count = 0
+    def __init__(self, layers: List[Operator], data_type: DataType):
+        super().__init__(0, 0, 0, 0, data_type)
+        self.name = f"{self.__class__.__name__}_{Sequential.__count}"
+        self.layers = layers
+        Sequential.__count += 1
+    
+    def __call__(self, x: Tensor):
+        for op in self.layers:
+            x = op(x)
+
+        return x

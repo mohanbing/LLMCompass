@@ -165,8 +165,8 @@ class TransformerBlockAutoRegressionTP(Operator):
         self.d_model = d_model
         self.n_heads = n_heads
         self.d_head = d_head
-        self.device_count = device_count
-        self.device_count_sz = device_count_sz
+        self.device_count = device_count # 4 device of 8-core each
+        self.device_count_sz = device_count_sz # 8 cores
         # parameters per device
         d = d_model
         self.Wq = Tensor([d, d], data_type)
@@ -994,8 +994,8 @@ class GPTModel:
 if __name__ == "__main__":
     from pathlib import Path
 
-    d_model = 1536
-    n_heads = 24
+    d_model = 2048
+    n_heads = 32
     d_head = d_model//n_heads
     n_layers = 1
     device_count = 4
@@ -1022,7 +1022,7 @@ if __name__ == "__main__":
     logits = model.forward(x, seq_len=seq_len)
 
     symbol_table_path = Path("symbol_table.json")
-    dep_graph_path = Path("dep_graph_gpt3_large_decode_one_block.json")
+    dep_graph_path = Path("dep_graph_gpt3_xl_decode_one_block.json")
     # dep_graph_path = Path("tiny_decode.json")
     SymbolTable.dump_symbol_table_to_json(symbol_table_path)
     DependencyGraph.dump_graph_to_json(dep_graph_path)
