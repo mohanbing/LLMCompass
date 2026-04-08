@@ -185,6 +185,20 @@ class BarrierSync(Operator):
         DependencyGraph.add_node_to_graph(None, None, self.__class__.__name__, self.name)
         return None
     
+class AllChipletBarrierSync(Operator):
+    __count = 0
+
+    def __init__(self, data_type: DataType):
+        super().__init__(0, 0, 0, 0, data_type)
+        self.name = f"{self.__class__.__name__}_{AllChipletBarrierSync.__count}"
+        self.input_shape = None
+        self.output_shape = None
+        AllChipletBarrierSync.__count += 1
+    
+    def __call__(self):
+        DependencyGraph.add_node_to_graph(None, None, self.__class__.__name__, self.name)
+        return None
+    
 class Sequential(Operator):
     __count = 0
     def __init__(self, layers: List[Operator], data_type: DataType):

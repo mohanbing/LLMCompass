@@ -158,6 +158,7 @@ class Matmul(Operator):
             self.output_shape = self.input1_shape[:-1] + [self.N]
 
         if output:
+            old_key = output.key
             assert output.shape == self.output_shape
             output = Tensor(shape=output.shape, data_type=output.data_type, reuse_t=output)
         else:
@@ -172,6 +173,10 @@ class Matmul(Operator):
         product = 1
         for x in input2.shape:
             product *= x
+        
+        if self.batched_matmul_details:
+            self.batched_matmul_details[output.key] = self.batched_matmul_details.pop(old_key)
+            
         DependencyGraph.add_node_to_graph(output, [input1, input2], self.__class__.__name__, 
                                           self.name, 
                                           self.desc, 
@@ -833,6 +838,8 @@ class Matmul(Operator):
                 <= pcb_module.compute_module.l2_size // self.data_type.word_size
             )
 
+        # calculate total number of tiles and the remainders if
+        # not perfectly divisible
         M_l2_t = M // l2_tile_M
         N_l2_t = N // l2_tile_N
         K_l2_t = K // l2_tile_K
@@ -840,12 +847,16 @@ class Matmul(Operator):
         N_remain = N % l2_tile_N
         K_remain = K % l2_tile_K
 
+        # create 3D array of L2 tile objects
+        # each element in this array represents a matmul
+        # that calculates the output tile (MxN)
         l2_tiles = np.empty(
             [ceil(M / l2_tile_M), ceil(N / l2_tile_N), ceil(K / l2_tile_K)],
             dtype=self.L2TileSimulator,
         )
         # print('-'*20)
         # print(l2_tiles.shape)
+        # instantiate all tiles if each dim has a whole tile
         if M_l2_t * N_l2_t * K_l2_t != 0:
             l2_tiles[:M_l2_t, :N_l2_t, :K_l2_t] = self.L2TileSimulator(
                 l2_tile_M,
@@ -856,6 +867,8 @@ class Matmul(Operator):
                 pcb_module,
                 self.look_up_table,
             )
+        # if there is a remainder M tile then last row in the M dimension
+        # will need to be instantiated
         if M_remain != 0:
             l2_tiles[-1, :N_l2_t, :K_l2_t] = self.L2TileSimulator(
                 M_remain,
@@ -866,6 +879,8 @@ class Matmul(Operator):
                 pcb_module,
                 self.look_up_table,
             )
+        # if there is a remainder N tile then last row in the M dimension
+        # will need to be instantiated
         if N_remain != 0:
             l2_tiles[:M_l2_t, -1, :K_l2_t] = self.L2TileSimulator(
                 l2_tile_M,
@@ -876,6 +891,8 @@ class Matmul(Operator):
                 pcb_module,
                 self.look_up_table,
             )
+        # if there is a remainder K tile then last row in the M dimension
+        # will need to be instantiated
         if K_remain != 0:
             l2_tiles[:M_l2_t, :N_l2_t, -1] = self.L2TileSimulator(
                 l2_tile_M,
@@ -886,6 +903,7 @@ class Matmul(Operator):
                 pcb_module,
                 self.look_up_table,
             )
+        
         if M_remain * N_remain != 0:
             l2_tiles[-1, -1, :K_l2_t] = self.L2TileSimulator(
                 M_remain,
@@ -927,6 +945,7 @@ class Matmul(Operator):
                 self.look_up_table,
             )
 
+        # calcualte cycle count for loading first input tiles
         total_cycle_count = 0
         total_cycle_count += (
             l2_tiles[0, 0, 0].M_K_io_cycle_count + l2_tiles[0, 0, 0].K_N_io_cycle_count
