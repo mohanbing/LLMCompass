@@ -4,7 +4,7 @@ from pathlib import Path
 
 
 G = graphviz.Digraph(format="png", node_attr={'color': 'lightblue2', 'style': 'filled'})
-path = Path("/home/amohan2/Wyvern/LLMCompass/new_tiny_decode.json")
+path = Path("/home/amohan2/LLMCompass/prefill.json")
 colors = ['red', 'blue', 'green', 'purple', 'black']
 color_index = 0
 
@@ -19,6 +19,9 @@ def construct_graph(dep_graph:dict):
 
     for node, val in dep_graph.items():
         nodes[node] = []
+
+        if val["dep"] is None:
+            continue
 
         for _, tensor_details in val["dep"].items():
             tensor_name = tensor_details["variable_name"]
@@ -83,4 +86,4 @@ def construct_graph(dep_graph:dict):
     
 
 construct_graph(dep_graph)
-G.render("tiny")
+G.render("prefill")

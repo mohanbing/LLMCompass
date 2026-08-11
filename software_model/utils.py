@@ -12,7 +12,7 @@ class SymbolTable:
     def create_entry(cls, t, reuse_t=None, offset=0):
         entry = {}
         entry["data_type"] = t.data_type
-        entry["size"] = (t.size * t.data_type.word_size)//4
+        entry["size"] = t.size * t.data_type.word_size
         entry["shape"] = t.shape
         entry["tensor_desc"] = t.desc
         entry["row_parallel"] = t.row_parallel_linear

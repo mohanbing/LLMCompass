@@ -184,7 +184,7 @@ if __name__ == "__main__":
     batch_size = 1
     
     model = ResNet18(10, 3)
-    x = Tensor([batch_size, 3, 224, 224], data_type_dict["fp16"])
+    x = Tensor([batch_size, 3, 28, 28], data_type_dict["fp16"])
     logits = model(x)
 
     symbol_table_path = Path("symbol_table.json")

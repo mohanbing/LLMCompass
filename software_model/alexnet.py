@@ -114,7 +114,7 @@ class AlexNet(Operator):
         self.relu5 = ReLU(data_type)
         self.max_pool3 = MaxPool2d(kernel_size=3, stride=2, padding=0, data_type=data_type)
 
-        self.linear1 = Linear(in_feat=256 * 6 * 6, out_feat=4096, bias=False, data_type=data_type)
+        self.linear1 = Linear(in_feat=256, out_feat=4096, bias=False, data_type=data_type)
         self.relu6 = ReLU(data_type)
 
         self.linear2 = Linear(in_feat=4096, out_feat=4096, bias=False, data_type=data_type)
@@ -159,7 +159,7 @@ if __name__ == "__main__":
     model = AlexNet(
         data_type=data_type_dict["fp16"]
     )
-    x = Tensor([batch_size, 3, 224, 224], data_type_dict["fp16"])
+    x = Tensor([batch_size, 3, 28, 28], data_type_dict["fp16"])
     logits = model(x)
 
     symbol_table_path = Path("symbol_table.json")
