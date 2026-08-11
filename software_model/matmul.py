@@ -3,6 +3,7 @@ from typing import List, Tuple
 from hardware_model.device import Device
 from software_model.operators import Operator
 from software_model.utils import Tensor, DataType
+from software_model.graph import DependencyGraph
 from math import ceil, log2, floor
 import torch
 import time
@@ -15,11 +16,15 @@ import copy
 
 
 class BatchedMatmul(Operator):
+    __count = 0
+
     def __init__(self, data_type: DataType):
         super().__init__(0, 0, 0, 0, data_type)
+        self.name = f"{self.__class__.__name__}_{BatchedMatmul.__count}"
         self.input1_shape = None
         self.input2_shape = None
         self.output_shape = None
+        BatchedMatmul.__count += 1
 
     def __call__(self, input1: Tensor, input2: Tensor) -> Tensor:
         # [b, M, K] * [b, K, N] = [b, M, N]
@@ -35,6 +40,7 @@ class BatchedMatmul(Operator):
         self.N = self.input2_shape[-1]
         self.output_shape = self.input1_shape[:-2] + [self.M, self.N]
         output = Tensor(self.output_shape, self.data_type)
+        DependencyGraph.add_node_to_graph(output, [input1, input2], self.__class__.__name__, self.name, self.desc, core=self.core_device)
         return output
 
     def roofline_model(self, pcb_module: Device):
@@ -120,15 +126,22 @@ class BatchedMatmul(Operator):
 
 
 class Matmul(Operator):
+    __count=0
+    __learnable_parameters=0
+
     def __init__(self, data_type: DataType):
         super().__init__(0, 0, 0, 0, data_type)
+        self.name = f"{self.__class__.__name__}_{Matmul.__count}"
         self.input1_shape = None
         self.input2_shape = None
         self.output_shape = None
         self.look_up_table = None
         self.best_mapping = None
+        self.batched_matmul_details = None
+        self.sharded_matmul_details = None
+        Matmul.__count += 1
 
-    def __call__(self, input1: Tensor, input2: Tensor) -> Tensor:
+    def __call__(self, input1: Tensor, input2: Tensor, output: Tensor = None) -> Tensor:
         # [bs, M, K] * [K, N] = [bs, M, N]
         assert self.data_type == input1.data_type
         assert self.data_type == input2.data_type
@@ -138,18 +151,44 @@ class Matmul(Operator):
         self.K = self.input1_shape[-1]
         assert self.input2_shape[-2] == self.K
         self.N = self.input2_shape[-1]
+        
         if len(self.input1_shape) == 2:
             self.output_shape = [self.M, self.N]
         else:
             self.output_shape = self.input1_shape[:-1] + [self.N]
-        output = Tensor(self.output_shape, self.data_type)
+
+        if output:
+            old_key = output.key
+            assert output.shape == self.output_shape
+            output = Tensor(shape=output.shape, data_type=output.data_type, reuse_t=output)
+        else:
+            output = Tensor(self.output_shape, self.data_type)
+
         self.computational_graph = self.ComputationalGraph(
             self.M, self.N, self.K, self.data_type
         )
         self.flop_count = 2 * self.M * self.K * self.N
         self.io_count = self.M * self.K + self.K * self.N + self.M * self.N
         # print(f'{self.M}, {self.N}, {self.K}')
+        product = 1
+        for x in input2.shape:
+            product *= x
+        
+        if self.batched_matmul_details:
+            self.batched_matmul_details[output.key] = self.batched_matmul_details.pop(old_key)
+            
+        DependencyGraph.add_node_to_graph(output, [input1, input2], self.__class__.__name__, 
+                                          self.name, 
+                                          self.desc, 
+                                          core=self.core_device, 
+                                          batched_matmul_details=self.batched_matmul_details,
+                                          sharded_matmul_details=self.sharded_matmul_details)
+        
+        self.__class__.__learnable_parameters += product
         return output
+
+    def get_learnable_parameters(self):
+        return self.__class__.__learnable_parameters
 
     def roofline_model(self, pcb_module: Device):
         self.roofline_latency = max(
@@ -799,6 +838,8 @@ class Matmul(Operator):
                 <= pcb_module.compute_module.l2_size // self.data_type.word_size
             )
 
+        # calculate total number of tiles and the remainders if
+        # not perfectly divisible
         M_l2_t = M // l2_tile_M
         N_l2_t = N // l2_tile_N
         K_l2_t = K // l2_tile_K
@@ -806,12 +847,16 @@ class Matmul(Operator):
         N_remain = N % l2_tile_N
         K_remain = K % l2_tile_K
 
+        # create 3D array of L2 tile objects
+        # each element in this array represents a matmul
+        # that calculates the output tile (MxN)
         l2_tiles = np.empty(
             [ceil(M / l2_tile_M), ceil(N / l2_tile_N), ceil(K / l2_tile_K)],
             dtype=self.L2TileSimulator,
         )
         # print('-'*20)
         # print(l2_tiles.shape)
+        # instantiate all tiles if each dim has a whole tile
         if M_l2_t * N_l2_t * K_l2_t != 0:
             l2_tiles[:M_l2_t, :N_l2_t, :K_l2_t] = self.L2TileSimulator(
                 l2_tile_M,
@@ -822,6 +867,8 @@ class Matmul(Operator):
                 pcb_module,
                 self.look_up_table,
             )
+        # if there is a remainder M tile then last row in the M dimension
+        # will need to be instantiated
         if M_remain != 0:
             l2_tiles[-1, :N_l2_t, :K_l2_t] = self.L2TileSimulator(
                 M_remain,
@@ -832,6 +879,8 @@ class Matmul(Operator):
                 pcb_module,
                 self.look_up_table,
             )
+        # if there is a remainder N tile then last row in the M dimension
+        # will need to be instantiated
         if N_remain != 0:
             l2_tiles[:M_l2_t, -1, :K_l2_t] = self.L2TileSimulator(
                 l2_tile_M,
@@ -842,6 +891,8 @@ class Matmul(Operator):
                 pcb_module,
                 self.look_up_table,
             )
+        # if there is a remainder K tile then last row in the M dimension
+        # will need to be instantiated
         if K_remain != 0:
             l2_tiles[:M_l2_t, :N_l2_t, -1] = self.L2TileSimulator(
                 l2_tile_M,
@@ -852,6 +903,7 @@ class Matmul(Operator):
                 pcb_module,
                 self.look_up_table,
             )
+        
         if M_remain * N_remain != 0:
             l2_tiles[-1, -1, :K_l2_t] = self.L2TileSimulator(
                 M_remain,
@@ -893,6 +945,7 @@ class Matmul(Operator):
                 self.look_up_table,
             )
 
+        # calcualte cycle count for loading first input tiles
         total_cycle_count = 0
         total_cycle_count += (
             l2_tiles[0, 0, 0].M_K_io_cycle_count + l2_tiles[0, 0, 0].K_N_io_cycle_count
