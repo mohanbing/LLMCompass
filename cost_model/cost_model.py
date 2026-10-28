@@ -2,21 +2,23 @@
 # Date started: 12 October 2023
 # This file is the cost model for Naivesim
 
-import numpy as np
+import argparse
+import json
 import math
-# import supply_chain.supply_chain_model as scm
-import cost_model.supply_chain.supply_chain_model as scm
 
 # lots of parameters required for calculating silicon die area cost
 
 # these are in terms of million transistors per mm2
-transistor_density_7nm = scm.transistor_density_arr[scm.PN_7_INDEX]
+transistor_density_7nm = 96.3
 transistor_density_6nm = 114.2
-transistor_density_5nm = scm.transistor_density_arr[scm.PN_5_INDEX]
+transistor_density_5nm = 138.2
+transistor_density_3nm = 224.0
+transistor_density_90nm = 1.6
 
 sram_bit_cell_density_7nm = 1.70e-07
 sram_bit_cell_density_6nm = 1.40e-07
 sram_bit_cell_density_5nm = 1.25e-07
+sram_bit_cell_density_3nm = 1.25e-07
 
 # cache size overheads derived from cacti for cache sizes
 # 4096, 8192, 16384, ..., 1 MB
@@ -81,6 +83,23 @@ NVLINK3 = 'NVLink3'
 NVLINK4 = 'NVLink4'
 INFINITYFABRIC = 'InfinityFabric'
 
+# die-to-die (D2D) PHYs between chiplets in a package
+# UCIe values are the UCIe 1.0/2.0 key metrics at 32 GT/s (Das Sharma, HOTI 2025):
+#   UCIe-S: x32 module @ 110um bump pitch is 1.143 mm (shoreline) x 1.54 mm, 224 GB/s/mm
+#   UCIe-A: x64 module @ 55um bump pitch is 0.389 mm (shoreline) x 1.585 mm, 1317 GB/s/mm
+# GRS is NVIDIA's 16nm link used in Simba: 81K um2 per 25 Gb/s lane
+# (Poulton et al. JSSC 2019, as used by ThermoDSE), shoreline not reported
+# bandwidths count both directions. D2D PHYs are bump limited, so like the
+# other PHYs their area does not scale with process node
+UCIE_S = 'UCIe-S'
+UCIE_A = 'UCIe-A'
+GRS = 'GRS'
+
+# (module area mm2, module shoreline mm, module bandwidth GB/s, reference data rate GT/s)
+d2d_phy_module_dict = {UCIE_S:(1.143 * 1.54, 1.143, 256, 32), \
+                       UCIE_A:(0.389 * 1.585, 0.389, 512, 32), \
+                       GRS:(0.081, None, 3.125, 25)}
+
 # average via dramexchange spot price, Oct 2023
 ddr5_cost_per_gb = 0.30
 hbm_cost_per_gb = 7
@@ -95,6 +114,8 @@ def calc_systolic_array_area_mm2(dimension_x, dimension_y, bitwidth, transistor_
         total_transistor_count = fpu32_transistor_count * dimension_x * dimension_y
     elif bitwidth == 'fp16':
         total_transistor_count = fpu16_transistor_count * dimension_x * dimension_y
+    else:
+        raise ValueError(f"Unsupported systolic-array data type: {bitwidth}")
 
     return total_transistor_count / 1e6 / transistor_density_mil_mm2
 
@@ -112,6 +133,9 @@ def calc_vector_area_mm2(int32_count, fp16_count, fp32_count, fp64_count, transi
 # split them up into multiple units of the max capacity
 # min cache size is 4096 bytes
 def calc_cache_sram_area_mm2(capacity_bytes, sram_bitcell_area_mm2, max_cache_unit_bytes=(2**19)):
+    if capacity_bytes <= 0:
+        return 0
+
     if capacity_bytes > max_cache_unit_bytes:
         num_cache_units = math.ceil(capacity_bytes / max_cache_unit_bytes)
         unit_size_bytes = max_cache_unit_bytes
@@ -141,7 +165,7 @@ def calc_reg_file_area(num_reg_files, D, W, P, transistor_density_mil_mm2):
     
     # need to convert um2 to mm2, convert to 7nm
     area_90nm_mm2 = area_90nm_um2 / 1e6
-    area_mm2 =  area_90nm_mm2 * (scm.transistor_density_arr[scm.PN_90_INDEX] / transistor_density_mil_mm2)
+    area_mm2 = area_90nm_mm2 * (transistor_density_90nm / transistor_density_mil_mm2)
     total_reg_file_area = num_reg_files * area_mm2
     return total_reg_file_area
 
@@ -164,6 +188,8 @@ def calc_mem_controller_area_mm2(mem_tech, width, transistor_density_mil_mm2):
         controller_transistor_count = nvlink4_ctrl_transistors_per_link_unit * width
     elif mem_tech == INFINITYFABRIC:
         controller_transistor_count = infinity_fabric_ctrl_transistors_per_link_unit * width
+    else:
+        raise ValueError(f"Unsupported memory controller technology: {mem_tech}")
 
     return (controller_transistor_count / 1e6) / transistor_density_mil_mm2
 
@@ -183,7 +209,22 @@ def calc_mem_phy_area_mm2(mem_tech, width):
     elif mem_tech == INFINITYFABRIC:
         return infinity_fabric_phy_mm2_per_link_unit * width
     else:
-        return -1
+        raise ValueError(f"Unsupported PHY technology: {mem_tech}")
+
+# D2D PHYs come in fixed size modules, so round up to whole modules
+# bandwidth_GBps is the total (both directions) D2D bandwidth this die needs
+# data rate scales module bandwidth at fixed area, valid up to the spec max (32 GT/s for UCIe 2.0)
+def calc_d2d_phy_area_mm2(phy_type, bandwidth_GBps, data_rate_GTs=None):
+    if phy_type not in d2d_phy_module_dict:
+        raise ValueError(f"Unsupported D2D PHY: {phy_type}")
+
+    module_area, module_shoreline, module_bandwidth, ref_data_rate = d2d_phy_module_dict[phy_type]
+    if data_rate_GTs is not None:
+        module_bandwidth = module_bandwidth * data_rate_GTs / ref_data_rate
+
+    num_modules = math.ceil(bandwidth_GBps / module_bandwidth)
+    shoreline_mm = num_modules * module_shoreline if module_shoreline is not None else None
+    return num_modules * module_area, shoreline_mm
 
 def find_logic_sram_transistor_density(process_node):
     if '7' in process_node:
@@ -192,6 +233,8 @@ def find_logic_sram_transistor_density(process_node):
         return transistor_density_6nm, sram_bit_cell_density_6nm
     elif '5' in process_node:
         return transistor_density_5nm, sram_bit_cell_density_5nm
+    elif '3' in process_node:
+        return transistor_density_3nm, sram_bit_cell_density_3nm
 
     raise Exception("Invalid Process Node")
 
@@ -215,14 +258,26 @@ def calc_compute_chiplet_area_mm2(configs_dict, verbose=False):
     sa_dim_x = configs_dict['device']['compute_chiplet']['core']['systolic_array']['array_width']
     sa_dim_y = configs_dict['device']['compute_chiplet']['core']['systolic_array']['array_height']
     sa_bitwidth = configs_dict['device']['compute_chiplet']['core']['systolic_array']['data_type']
-    num_reg_files = configs_dict['device']['compute_chiplet']['core']['register_file']['num_reg_files']
-    num_registers = configs_dict['device']['compute_chiplet']['core']['register_file']['num_registers']
-    register_bitwidth = configs_dict['device']['compute_chiplet']['core']['register_file']['register_bitwidth']
-    num_rdwr_ports = configs_dict['device']['compute_chiplet']['core']['register_file']['num_rdwr_ports']
+    register_file = configs_dict['device']['compute_chiplet']['core'].get('register_file', {})
+    num_reg_files = register_file.get('num_reg_files', 0)
+    num_registers = register_file.get('num_registers', 0)
+    register_bitwidth = register_file.get('register_bitwidth', 0)
+    num_rdwr_ports = register_file.get('num_rdwr_ports', 0)
     sublane_count = configs_dict['device']['compute_chiplet']['core']['sublane_count']
-    cache_size_bytes = configs_dict['device']['compute_chiplet']['core']['SRAM_KB'] * (2 ** 10)
+    core_config = configs_dict['device']['compute_chiplet']['core']
+    chiplet_config = configs_dict['device']['compute_chiplet']
+    if 'L0_SRAM_KB' in core_config:
+        l0_cache_size_bytes = core_config['L0_SRAM_KB'] * (2 ** 10)
+        l1_cache_size_bytes = chiplet_config.get('L1_SRAM_KB', 0) * (2 ** 10)
+        l2_cache_size_bytes = chiplet_config.get('L2_SRAM_KB', 0) * (2 ** 10)
+    else:
+        l0_cache_size_bytes = 0
+        l1_cache_size_bytes = core_config.get('SRAM_KB', 0) * (2 ** 10)
+        l2_cache_size_bytes = 0
     process_node = configs_dict['device']['compute_chiplet']['process_node']
-    cores_per_chiplet = configs_dict['device']['compute_chiplet']['physical_core_count']
+    cores_per_chiplet = chiplet_config.get('physical_core_count', chiplet_config.get('core_count'))
+    if cores_per_chiplet is None:
+        raise KeyError("compute_chiplet requires physical_core_count or core_count")
 
     # each sublane has a SA and vector unit. a core is made up of sublanes. a chiplet has multiple cores
     transistor_density_mil_mm2, sram_density_bitcell_mm2 = find_logic_sram_transistor_density(process_node)
@@ -241,24 +296,40 @@ def calc_compute_chiplet_area_mm2(configs_dict, verbose=False):
     per_sublane_area_mm2 += per_lane_regfile_area
 
     per_core_compute_area_mm2 = per_sublane_area_mm2 * sublane_count
-    cache_area_mm2 = calc_cache_sram_area_mm2(cache_size_bytes, sram_density_bitcell_mm2)
-    per_core_area_mm2 = per_core_compute_area_mm2 + cache_area_mm2
+    l0_cache_area_mm2 = calc_cache_sram_area_mm2(l0_cache_size_bytes, sram_density_bitcell_mm2) * sublane_count
+    l1_cache_area_mm2 = calc_cache_sram_area_mm2(l1_cache_size_bytes, sram_density_bitcell_mm2)
+    l2_cache_slice_area_mm2 = calc_cache_sram_area_mm2(l2_cache_size_bytes, sram_density_bitcell_mm2)
+    per_core_area_mm2 = per_core_compute_area_mm2 + l0_cache_area_mm2 + l1_cache_area_mm2 + l2_cache_slice_area_mm2
 
     core_breakdown_map['total_core_area'] = per_core_area_mm2
     core_breakdown_map['control_area'] = control_logic_area
     core_breakdown_map['alu_area'] = per_lane_vector_area * sublane_count
     core_breakdown_map['sa_area'] = per_lane_sa_area * sublane_count
     core_breakdown_map['regfile_area'] = per_lane_regfile_area * sublane_count
-    core_breakdown_map['local_buffer_area'] = cache_area_mm2
+    core_breakdown_map['l0_buffer_area'] = l0_cache_area_mm2
+    core_breakdown_map['l1_buffer_area'] = l1_cache_area_mm2
+    core_breakdown_map['l2_buffer_area'] = l2_cache_slice_area_mm2
 
     total_cores_area = per_core_area_mm2 * cores_per_chiplet
     total_crossbar_area = (per_core_comm_dict[device_brand] / 1e6 / transistor_density_mil_mm2) * cores_per_chiplet
     # each core has an area overhead to connect to the xbar
     compute_chiplet_area_mm2 = total_cores_area + total_crossbar_area
 
+    # optional D2D PHY linking this chiplet to the rest of the package
+    d2d_phy_area, d2d_shoreline_mm = 0, 0
+    d2d_config = chiplet_config.get('d2d')
+    if d2d_config is not None:
+        d2d_phy_area, d2d_shoreline_mm = calc_d2d_phy_area_mm2(d2d_config['phy'], \
+            d2d_config['bandwidth_byte'] / 1e9, d2d_config.get('data_rate_GTs'))
+    compute_chiplet_area_mm2 += d2d_phy_area
+
     total_die_map['total_area'] = compute_chiplet_area_mm2
     total_die_map['cores_area'] = total_cores_area
     total_die_map['crossbar_area'] = total_crossbar_area
+    total_die_map['d2d_phy_area'] = d2d_phy_area
+    # compare against the die perimeter (4 * sqrt(area) for a square die); PHYs must sit on the edge
+    total_die_map['d2d_shoreline_mm'] = d2d_shoreline_mm
+    total_die_map['die_perimeter_mm'] = 4 * math.sqrt(compute_chiplet_area_mm2)
     if verbose:
         return compute_chiplet_area_mm2, core_breakdown_map, total_die_map
     else:
@@ -272,7 +343,7 @@ def calc_compute_chiplet_area_mm2(configs_dict, verbose=False):
 def calc_io_die_area_mm2(config_dict, verbose=False):
     total_die_map = {}
 
-    cache_size_bytes = config_dict['device']['io']['physical_global_buffer_MB'] * (2 ** 20)
+    cache_size_bytes = config_dict['device']['io'].get('physical_global_buffer_MB', 0) * (2 ** 20)
     mem_tech = config_dict['device']['memory_protocol']
     num_mem_tech_units = config_dict['device']['io']['memory_channel_physical_count']
     gpu_gpu_comm_tech = config_dict['interconnect']['link']['name']
@@ -296,14 +367,67 @@ def calc_io_die_area_mm2(config_dict, verbose=False):
     io_die_area_mm2 += device_phy_area
     io_die_area_mm2 += device_controller_area
 
+    # the IO die terminates the D2D link of every compute chiplet
+    d2d_phy_area = 0
+    d2d_config = config_dict['device']['compute_chiplet'].get('d2d')
+    if d2d_config is not None:
+        compute_chiplet_count = config_dict['device'].get('compute_chiplet_count', 1)
+        d2d_phy_area, _ = calc_d2d_phy_area_mm2(d2d_config['phy'], \
+            compute_chiplet_count * d2d_config['bandwidth_byte'] / 1e9, d2d_config.get('data_rate_GTs'))
+    io_die_area_mm2 += d2d_phy_area
+
     total_die_map['total_die_area'] = io_die_area_mm2
     total_die_map['global_buffer_area'] = global_buffer_area
     total_die_map['mem_phy_area'] = mem_phy_area
     total_die_map['mem_controller_area'] = mem_controller_area
     total_die_map['device_phy_area'] = device_phy_area
     total_die_map['device_controller_area'] = device_controller_area
+    total_die_map['d2d_phy_area'] = d2d_phy_area
 
     if verbose:
         return io_die_area_mm2, total_die_map
     else:
         return io_die_area_mm2
+
+def calc_device_area_mm2(config_dict, verbose=False):
+    """Estimate compute-chiplet area plus one IO-die area for a device."""
+    compute_chiplet_area, core_breakdown, compute_breakdown = calc_compute_chiplet_area_mm2(
+        config_dict, verbose=True
+    )
+    io_die_area, io_breakdown = calc_io_die_area_mm2(config_dict, verbose=True)
+    compute_chiplet_count = config_dict['device'].get('compute_chiplet_count', 1)
+    total_compute_area = compute_chiplet_area * compute_chiplet_count
+    total_device_area = total_compute_area + io_die_area
+
+    if verbose:
+        return {
+            'compute_chiplet_area_mm2': compute_chiplet_area,
+            'compute_chiplet_count': compute_chiplet_count,
+            'total_compute_area_mm2': total_compute_area,
+            'io_die_area_mm2': io_die_area,
+            'total_device_area_mm2': total_device_area,
+            'core_breakdown': core_breakdown,
+            'compute_chiplet_breakdown': compute_breakdown,
+            'io_die_breakdown': io_breakdown,
+        }
+    return total_device_area
+
+
+def main():
+    parser = argparse.ArgumentParser(description='Estimate device area from an architecture JSON file.')
+    parser.add_argument('config', help='Path to the architecture JSON config')
+    args = parser.parse_args()
+
+    with open(args.config, 'r', encoding='utf-8') as config_file:
+        config_dict = json.load(config_file)
+
+    area = calc_device_area_mm2(config_dict, verbose=True)
+    print(f"Compute chiplet area: {area['compute_chiplet_area_mm2']:.3f} mm^2 each")
+    print(f"Compute chiplets: {area['compute_chiplet_count']}")
+    print(f"Total compute area: {area['total_compute_area_mm2']:.3f} mm^2")
+    print(f"IO die area: {area['io_die_area_mm2']:.3f} mm^2 (one IO die assumed)")
+    print(f"Total device area: {area['total_device_area_mm2']:.3f} mm^2")
+
+
+if __name__ == '__main__':
+    main()

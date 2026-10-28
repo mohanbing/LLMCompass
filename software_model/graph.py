@@ -15,7 +15,9 @@ class DependencyGraph:
                           core:int = -1, 
                           batched_matmul_details: dict = None,
                           sharded_matmul_details: dict = None,
-                          stride: int = 1):
+                          stride: int = 1,
+                          cores: Optional[List[int]] = None,
+                          extra: Optional[dict] = None):
         
         if batched_matmul_details:
             cls.graph[op_name] = dict(
@@ -51,6 +53,8 @@ class DependencyGraph:
                     chiplet = str(0),
                     stride=stride
                 )
+                    if cores is not None:
+                        cls.graph[op_name]["cores"] = [str(c) for c in cores]
                 else:
                     cls.graph[op_name] = dict(
                         dep = {f"op_{op_c}":SymbolTable.table[dep.name] for op_c, dep in enumerate(dep_list)},
@@ -61,6 +65,8 @@ class DependencyGraph:
                         chiplet = str(0),
                         stride=stride
                     )
+                    if extra is not None:
+                        cls.graph[op_name].update(extra)
 
     @classmethod
     def dump_graph_to_json(cls, path:Path):

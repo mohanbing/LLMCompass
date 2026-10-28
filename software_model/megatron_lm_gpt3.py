@@ -4,7 +4,8 @@ from software_model.operators import (
     Concat,
     Transpose,
     ElementWiseAddition,
-    BarrierSync
+    BarrierSync,
+    Prefetch
 )
 from software_model.matmul import Matmul
 from software_model.softmax import Softmax
@@ -15,8 +16,7 @@ from software_model.utils import Tensor, DataType, data_type_dict
 from software_model.communication_primitives import AllReduceMultiPCB
 from software_model.graph import DependencyGraph
 from software_model.utils import SymbolTable
-from math import ceil
-from typing import List, Tuple
+from typing import List, Tuple, Optional
 from hardware_model.system import System
 
 
@@ -49,6 +49,7 @@ class TransformerBlockInitComputationTP(Operator):
         self.Wv.set_desc("W2")
         # operators per device
         # # multi-head attention
+        self.prefetch: List[Prefetch] = []
         self.Q_proj: List[Matmul] = []
         self.K_proj: List[Matmul] = []
         self.V_proj: List[Matmul] = []
@@ -71,6 +72,11 @@ class TransformerBlockInitComputationTP(Operator):
 
         for device_id in range(device_count):
             base_device_id = device_id * device_count_sz
+
+            prefetch_i = Prefetch(data_type)
+            prefetch_i.set_desc("prefetch_i")
+            prefetch_i.set_core_device(base_device_id)
+            self.prefetch.append(prefetch_i)
 
             Q_proj_i = Matmul(data_type)
             Q_proj_i.set_desc("Q_proj")
@@ -197,6 +203,11 @@ class TransformerBlockInitComputationTP(Operator):
         # multi-head attention
 
         for device_id in range(device_count):
+            _ = self.prefetch[device_id](x)
+                        
+            # # synchronizes all cores/devices at this point
+            _ = BarrierSync(self.data_type)()
+
             base_device_id = device_id * device_count_sz
             # Shards the Q, K, V calculation on different devices
             start_idx = device_id * (self.d_model // dev_cnt)
@@ -549,35 +560,44 @@ class TransformerBlockInitComputationTP(Operator):
 
 
 class TransformerBlockAutoRegressionTP(Operator):
-    def __init__(self, d_model, n_heads, d_head, device_count, data_type: DataType, device_count_sz: int = 8):
+    def __init__(self, d_model, n_heads, d_head, device_count, data_type: DataType, device_count_sz: int = 8, prefill_init_obj: Optional[TransformerBlockInitComputationTP] = None):
         super().__init__(0, 0, 0, 0, data_type)
         self.d_model = d_model
         self.n_heads = n_heads
         self.d_head = d_head
         self.device_count = device_count # 4 device of 8-core each
-        self.device_count_sz = device_count_sz # 8 cores
+        self.device_count_sz = device_count_sz # 4 cores
         # parameters per device
         d = d_model
-        self.Wq = Tensor([d, d], data_type)
-        self.Wq.set_desc("Wq")
+        if prefill_init_obj:
+            self.Wq = prefill_init_obj.Wq
+            self.Wk = prefill_init_obj.Wk
+            self.Wv = prefill_init_obj.Wv
+            
+            self.W0 = prefill_init_obj.W0
+            self.W1 = prefill_init_obj.W1
+            self.W2 = prefill_init_obj.W2
+        else:
+            self.Wq = Tensor([d, d], data_type)
+            self.Wq.set_desc("Wq")
 
-        self.Wk = Tensor([d, d], data_type)
-        self.Wk.set_desc("Wk")
+            self.Wk = Tensor([d, d], data_type)
+            self.Wk.set_desc("Wk")
 
-        self.Wv = Tensor([d, d], data_type)
-        self.Wv.set_desc("Wv")
-        
-        self.W0 = Tensor([d, d], data_type)
-        self.Wv.set_desc("W0")
+            self.Wv = Tensor([d, d], data_type)
+            self.Wv.set_desc("Wv")
+            
+            self.W0 = Tensor([d, d], data_type)
+            self.Wv.set_desc("W0")
 
-        self.W1 = Tensor([d, 4 * d], data_type)
-        self.Wv.set_desc("W1")
-        
-        self.W2 = Tensor([4 * d, d], data_type)
-        self.Wv.set_desc("W2")
+            self.W1 = Tensor([d, 4 * d], data_type)
+            self.Wv.set_desc("W1")
+            
+            self.W2 = Tensor([4 * d, d], data_type)
+            self.Wv.set_desc("W2")
         # operators per device
         # # multi-head attention
-
+        self.prefetch: List[Prefetch] = []
         self.Q_proj: List[Matmul] = []
         self.K_proj: List[Matmul] = []
         self.V_proj: List[Matmul] = []
@@ -737,6 +757,8 @@ class TransformerBlockAutoRegressionTP(Operator):
         all_h0_matmul_out: List[Tensor] = []
 
         for device_id in range(device_count):
+            # _ = self.prefetch[device_count_sz](x)
+            # _ = BarrierSync(self.data_type)()
 
             # Shards the Q, K, V calculation on different devices
             start_idx = device_id * (self.d_model // dev_cnt)
@@ -750,11 +772,18 @@ class TransformerBlockAutoRegressionTP(Operator):
             k_i = self.k[:, :, start_idx:end_idx]
             v_i = self.v[:, :, start_idx:end_idx]
 
-            start_head_idx = device_id * (self.n_heads // dev_cnt)
-            end_head_idx = (device_id + 1) * (self.n_heads // dev_cnt)
+            if dev_cnt > 1:
+                start_head_idx = device_id * (self.n_heads // dev_cnt)
+                end_head_idx = (device_id + 1) * (self.n_heads // dev_cnt)
 
-            branch_K_T_i = self.K_T[:, start_head_idx:end_head_idx, :, :]
-            branch_V_T_i = self.V_T[:, start_head_idx:end_head_idx, :, :]
+                branch_K_T_i = self.K_T[:, start_head_idx:end_head_idx, :, :]
+                branch_V_T_i = self.V_T[:, start_head_idx:end_head_idx, :, :]
+            else:
+                start_head_idx = 0
+                end_head_idx = self.n_heads
+
+                branch_K_T_i = self.K_T
+                branch_V_T_i = self.V_T
 
             Wq_offset = SymbolTable.get_base_address(Wq_i) - SymbolTable.get_base_address(self.Wq)
             Wk_offset = SymbolTable.get_base_address(Wk_i) - SymbolTable.get_base_address(self.Wk)
@@ -852,18 +881,24 @@ class TransformerBlockAutoRegressionTP(Operator):
             # Attention Head Calculation
             attn_head_core_ids = []
             all_h0: List[Tensor] = []
-            max_used_core_id = self.V_concat[device_id].core_device + 1       
+            max_used_core_id = self.V_concat[device_id].core_device + 1
+            rem_cores = self.device_count_sz - max_used_core_id 
 
             heads_on_device = h // dev_cnt
             start_head = device_id * heads_on_device
             end_head = (device_id + 1) * heads_on_device
+
+            # synchronizes all cores/devices at this point
+            _ = BarrierSync(self.data_type)()
             
             # maps a core to the most recent tensor it produces
             most_recent_tensor = {}
             all_out_tensors = []
+            attn_head_core_start = max_used_core_id
             for i in range(start_head, end_head):
-                target_core_id = min(self.V_concat[device_id].core_device + 1 + (i%4), (device_id + 1) * self.device_count_sz - 1)
-                
+                target_core_id = min(attn_head_core_start + (i % rem_cores), (device_id + 1) * self.device_count_sz - 1)
+                print(f"target core id: {target_core_id}")
+
                 q_T_i = q_T[:, i, :, :]
                 K_T_i = K_T[:, i, :, :]
                 a_out_i = a_out[:, i, :, :]
@@ -998,12 +1033,13 @@ class TransformerBlockAutoRegressionTP(Operator):
 
         # all-reduce all [b, 1, d] tensors from other devices
         h0 = all_h0_matmul_out[0]
-        for idx, tensor in enumerate(all_h0_matmul_out):
-            obj = ElementWiseAddition(self.data_type)
-            if idx != 0:
-                obj.set_core_device(self.device_count_sz-1)
-                out = obj(h0, tensor, h0)
-                h0 = out
+        if dev_cnt > 1:
+            for idx, tensor in enumerate(all_h0_matmul_out):
+                obj = ElementWiseAddition(self.data_type)
+                if idx != 0:
+                    obj.set_core_device(self.device_count_sz-1)
+                    out = obj(h0, tensor, h0)
+                    h0 = out
 
         # synchronizes all cores/devices at this point
         _ = BarrierSync(self.data_type)()
@@ -1090,12 +1126,15 @@ class TransformerBlockAutoRegressionTP(Operator):
         _ = BarrierSync(self.data_type)()
         # all-reduce all [b, 1, d] tensors from other devices
         h2 = all_h2_matmul_out[0]
-        for idx, tensor in enumerate(all_h2_matmul_out):
-            obj = ElementWiseAddition(self.data_type)
-            if idx != 0:
-                obj.set_core_device(self.device_count_sz-1)
-                out = obj(h2, tensor, h2)
-                h2 = out
+        if dev_cnt > 1:
+            for idx, tensor in enumerate(all_h2_matmul_out):
+                obj = ElementWiseAddition(self.data_type)
+                if idx != 0:
+                    obj.set_core_device(self.device_count_sz-1)
+                    out = obj(h2, tensor, h2)
+                    h2 = out
+        else:
+            out = h2
 
         return out
 
@@ -1396,11 +1435,11 @@ if __name__ == "__main__":
     n_heads = 12
     d_head = d_model//n_heads
     n_blocks = 1
-    device_count = 4
+    device_count = 1
     device_count_sz = 4
     batch_size = 1
-    seq_len = 128
-    prefill_active = True
+    seq_len = 2048
+    prefill_active = False
 
     model = GPTModel(
         d_model=d_model,
@@ -1419,7 +1458,8 @@ if __name__ == "__main__":
         x = model.prefill(prompt=prompt)
         dep_graph_path = Path("prefill.json")
         total_prefill_params = DependencyGraph.get_learnable_parameters()
-        DependencyGraph.reset_and_dump_graph(dep_graph_path)
+        # DependencyGraph.reset_and_dump_graph(dep_graph_path)
+        print(f"Matmul (Prefill) Learnable Parameter Count: {total_prefill_params}")
 
     # if we turn off prefill and assume it already exists
     else:
@@ -1428,7 +1468,7 @@ if __name__ == "__main__":
     logits = model.forward(x, seq_len=seq_len)
 
     symbol_table_path = Path("symbol_table.json")
-    dep_graph_path = Path("decode.json")
+    dep_graph_path = Path("tiny_decode.json")
 
     SymbolTable.dump_symbol_table_to_json(symbol_table_path)
     DependencyGraph.dump_graph_to_json(dep_graph_path)
@@ -1436,5 +1476,5 @@ if __name__ == "__main__":
 
     print("symbol table dumped to: ", symbol_table_path)
     print("dep graph dumped to: ", dep_graph_path)
-    print(f"Matmul (Prefill) Learnable Parameter Count: {total_prefill_params}")
+    
     print(f"Matmul (Decode) Learnable Parameter Count: {total_decode_params}")

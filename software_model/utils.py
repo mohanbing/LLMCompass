@@ -91,7 +91,7 @@ class Tensor:
     def __getitem__(self, keys):
         if isinstance(keys, tuple):
             
-            new_shape = self.shape
+            new_shape = list(self.shape)  # copy so slicing doesn't change the parent's shape
             row_maj_strides = [1 for _ in range(len(new_shape))]
             idx = len(row_maj_strides) - 2
             while idx >=0:

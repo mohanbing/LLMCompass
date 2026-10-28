@@ -4,7 +4,8 @@ from software_model.operators import (
     Concat,
     Transpose,
     ElementWiseAddition,
-    AllChipletBarrierSync
+    AllChipletBarrierSync,
+    Prefetch
 )
 from software_model.matmul import Matmul, BatchedMatmul
 from software_model.softmax import Softmax
@@ -49,6 +50,7 @@ class TransformerBlockInitComputationTP(Operator):
         self.W2.set_desc("W2")
         # operators per device
         # # multi-head attention
+        self.prefetch: List[Prefetch] = []
         self.Q_proj: List[Matmul] = []
         self.K_proj: List[Matmul] = []
         self.V_proj: List[Matmul] = []
@@ -71,6 +73,11 @@ class TransformerBlockInitComputationTP(Operator):
 
         for device_id in range(device_count):
             base_device_id = device_id * device_count_sz
+
+            prefetch_i = Prefetch(data_type)
+            prefetch_i.set_desc("prefetch_i")
+            prefetch_i.set_core_device(base_device_id)
+            self.prefetch.append(prefetch_i)
 
             Q_proj_i = Matmul(data_type)
             Q_proj_i.set_desc("Q_proj")
@@ -197,6 +204,11 @@ class TransformerBlockInitComputationTP(Operator):
         # multi-head attention
 
         for device_id in range(device_count):
+            # _ = self.prefetch[device_id](x)
+            
+            # # synchronizes all cores/devices at this point
+            # _ = AllChipletBarrierSync(self.data_type)()
+
             base_device_id = device_id * self.device_count_sz
             # Shards the Q, K, V calculation on different devices
             start_idx = device_id * (self.d_model // dev_cnt)
@@ -302,6 +314,7 @@ class TransformerBlockInitComputationTP(Operator):
             attn_head_core_ids = []
             all_h0: List[Tensor] = []
             max_used_core_id = self.V_transpose[device_id].core_device + 1
+            rem_cores = self.device_count_sz - max_used_core_id
 
             heads_on_device = h // dev_cnt
             start_head = device_id * heads_on_device
@@ -314,8 +327,8 @@ class TransformerBlockInitComputationTP(Operator):
             most_recent_tensor = {}
             all_out_tensors = []
             for i in range(start_head, end_head):
-                # target_core_id = min((device_id * self.device_count_sz) + (i%self.device_count_sz), (device_id + 1) * self.device_count_sz - 1)
-                target_core_id = min((device_id * self.device_count_sz) + (self.device_count_sz - 1), (device_id + 1) * self.device_count_sz - 1)
+                target_core_id = min((max_used_core_id + (i % rem_cores)), (device_id + 1) * self.device_count_sz - 1)
+                # target_core_id = min((device_id * self.device_count_sz) + (self.device_count_sz - 1), (device_id + 1) * self.device_count_sz - 1)
                 
                 q_T_i = q_T[:, i, :, :]
                 K_T_i = k_T[:, i, :, :]
@@ -586,6 +599,7 @@ class TransformerBlockAutoRegressionTP(Operator):
         # operators per device
         # # multi-head attention
 
+        self.prefetch: List[Prefetch] = []
         self.Q_proj: List[Matmul] = []
         self.K_proj: List[Matmul] = []
         self.V_proj: List[Matmul] = []
@@ -607,6 +621,11 @@ class TransformerBlockAutoRegressionTP(Operator):
         self.H_gelu = []
         self.H_matmul2: List[Matmul] = []
         self.layer_norm1 = []
+
+        prefetch_i = Prefetch(data_type)
+        prefetch_i.set_desc("prefetch_0")
+        prefetch_i.set_core_device(0)
+        self.prefetch.append(prefetch_i)
 
         for device_id in range(device_count):
             base_device_id = device_id * device_count_sz
@@ -744,8 +763,10 @@ class TransformerBlockAutoRegressionTP(Operator):
         h0_matmul_out = [Tensor([b, 1, d]) for _ in range(dev_cnt)]
         all_h0_matmul_out: List[Tensor] = []
 
-        for device_id in range(device_count):
+        # _ = self.prefetch[0](x)
+        # _ = AllChipletBarrierSync(self.data_type)()
 
+        for device_id in range(device_count):
             # Shards the Q, K, V calculation on different devices
             start_idx = device_id * (self.d_model // dev_cnt)
             end_idx = (device_id + 1) * (self.d_model // dev_cnt)
@@ -860,7 +881,8 @@ class TransformerBlockAutoRegressionTP(Operator):
             # Attention Head Calculation
             attn_head_core_ids = []
             all_h0: List[Tensor] = []
-            max_used_core_id = self.V_concat[device_id].core_device + 1       
+            max_used_core_id = self.V_concat[device_id].core_device + 1
+            rem_cores = self.device_count_sz - max_used_core_id
 
             heads_on_device = h // dev_cnt
             start_head = device_id * heads_on_device
@@ -872,9 +894,11 @@ class TransformerBlockAutoRegressionTP(Operator):
             # maps a core to the most recent tensor it produces
             most_recent_tensor = {}
             all_out_tensors = []
+            attn_head_core_start = max_used_core_id
             for i in range(start_head, end_head):
-                # target_core_id = min((device_id * self.device_count_sz) + (i%self.device_count_sz), (device_id + 1) * self.device_count_sz - 1)
-                target_core_id = min((device_id * self.device_count_sz) + (self.device_count_sz - 1), (device_id + 1) * self.device_count_sz - 1)
+                target_core_id = min(attn_head_core_start + (i % rem_cores), (device_id + 1) * self.device_count_sz - 1)
+                print(f"target core id: {target_core_id}")
+                # target_core_id = min((device_id * self.device_count_sz) + (self.device_count_sz - 1), (device_id + 1) * self.device_count_sz - 1)
 
                 q_T_i = q_T[:, i, :, :]
                 K_T_i = K_T[:, i, :, :]
@@ -1404,15 +1428,15 @@ class GPTModel:
 if __name__ == "__main__":
     from pathlib import Path
 
-    d_model = 768
+    d_model = 192
     n_heads = 12
     d_head = d_model//n_heads
     n_blocks = 1
     device_count = 4
     device_count_sz = 4
     batch_size = 1
-    seq_len = 128
-    prefill_active = True
+    seq_len = 2048
+    prefill_active = False
 
     model = GPTModel(
         d_model=d_model,
@@ -1440,7 +1464,7 @@ if __name__ == "__main__":
     logits = model.forward(x, seq_len=seq_len)
 
     symbol_table_path = Path("symbol_table.json")
-    dep_graph_path = Path("prefill_decode_gpt3_small_128_tokens.json")
+    dep_graph_path = Path("no_prefetch_tiny.json")
 
     SymbolTable.dump_symbol_table_to_json(symbol_table_path)
     DependencyGraph.dump_graph_to_json(dep_graph_path)
@@ -1448,5 +1472,5 @@ if __name__ == "__main__":
 
     print("symbol table dumped to: ", symbol_table_path)
     print("dep graph dumped to: ", dep_graph_path)
-    print(f"Matmul (Prefill) Learnable Parameter Count: {total_prefill_params}")
+    # print(f"Matmul (Prefill) Learnable Parameter Count: {total_prefill_params}")
     print(f"Matmul (Decode) Learnable Parameter Count: {total_decode_params}")

@@ -1,0 +1,74 @@
+{
+    "name": "Wyvern",
+    "device_count": 4,
+    "interconnect": {
+        "link": {
+            "name": "HBM2e",
+            "bandwidth_per_direction_byte": 25e9,
+            "bandwidth_both_directions_byte": 50e9,
+            "latency_second": 8.92e-6,
+            "flit_size_byte": 16,
+            "header_size_byte": 16,
+            "max_payload_size_byte": 256
+        },
+        "link_count_per_device": 12,
+        "topology": "MESH"
+    },
+    "device": {
+        "frequency_Hz": 1e9,
+        "compute_chiplet_count": 2,
+        "compute_chiplet": {
+            "core_count": 8,
+            "process_node": "3nm",
+            "core": {
+                "sublane_count": 1,
+                "systolic_array": {
+                    "array_width": 128,
+                    "array_height": 128,
+                    "data_type": "fp16",
+                    "mac_per_cycle": 1
+                },
+                "vector_unit": {
+                    "vector_width": 64,
+                    "flop_per_cycle": 4,
+                    "data_type": "fp16",
+                    "int32_count": 0,
+                    "fp16_count": 64,
+                    "fp32_count": 0,
+                    "fp64_count": 0
+                },
+                "register_file": {
+                    "num_reg_files": 0,
+                    "num_registers": 16384,
+                    "register_bitwidth":32,
+                    "num_rdwr_ports":4
+                },
+                "L0_SRAM_KB": 1024
+            },
+            "L1_SRAM_KB" : 4096,
+            "L2_SRAM_KB" : 16384
+        },
+        "memory_protocol": "HBM2e",
+        "_memory_protocol_list": [
+            "HBM4",
+            "HBM2e",
+            "DDR4",
+            "DDR5",
+            "PCIe4",
+            "PCIe5"
+        ],
+        "io": {
+            "process_node": "7nm",
+            "global_buffer_MB": 0,
+            "physical_global_buffer_MB": 0,
+            "global_buffer_bandwidth_per_cycle_byte": 0,
+            "memory_channel_physical_count": 4,
+            "memory_channel_active_count": 4,
+            "pin_count_per_channel": 1024,
+            "bandwidth_per_pin_bit": 3.2e9
+        },
+        "memory": {
+            "total_capacity_GB": 80
+        }
+    }
+}

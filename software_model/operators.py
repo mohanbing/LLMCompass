@@ -194,11 +194,28 @@ class AllChipletBarrierSync(Operator):
         self.input_shape = None
         self.output_shape = None
         AllChipletBarrierSync.__count += 1
-    
+
     def __call__(self):
         DependencyGraph.add_node_to_graph(None, None, self.__class__.__name__, self.name)
         return None
-    
+
+class CoreGroupBarrierSync(Operator):
+    __count = 0
+
+    def __init__(self, data_type: DataType):
+        super().__init__(0, 0, 0, 0, data_type)
+        self.name = f"{self.__class__.__name__}_{CoreGroupBarrierSync.__count}"
+        self.input_shape = None
+        self.output_shape = None
+        CoreGroupBarrierSync.__count += 1
+
+    def __call__(self, core_ids: List[int]):
+        assert len(core_ids) > 0
+        assert len(set(core_ids)) == len(core_ids)
+        assert all(c >= 0 for c in core_ids)
+        DependencyGraph.add_node_to_graph(None, None, self.__class__.__name__, self.name, cores=sorted(core_ids))
+        return None
+
 class Sequential(Operator):
     __count = 0
     def __init__(self, layers: List[Operator], data_type: DataType):
@@ -212,3 +229,76 @@ class Sequential(Operator):
             x = op(x)
 
         return x
+
+class Prefetch(Operator):
+    __count=0
+
+    def __init__(self, data_type: DataType):
+        super().__init__(0, 0, 0, 0, data_type)
+        self.name = f"{self.__class__.__name__}_{Prefetch.__count}"
+        self.input_shape = None
+        self.output_shape = None
+        Prefetch.__count += 1
+
+    def __call__(self, input1: Tensor) -> Tensor:
+        assert self.data_type == input1.data_type
+        self.input_shape = input1.shape
+        self.output_shape = input1.shape
+        self.flop_count = 0
+        self.load_count = input1.size
+        self.store_count = 0
+        self.io_count = self.load_count
+        self.peak_memory_usage = 0
+
+        DependencyGraph.add_node_to_graph(
+            input1,
+            [input1],
+            self.__class__.__name__,
+            self.name,
+            self.desc,
+            core=self.core_device,
+        )
+        return input1
+
+class RingSendRecv(Operator):
+    __count=0
+
+    def __init__(self, data_type: DataType):
+        super().__init__(0, 0, 0, 0, data_type)
+        self.name = f"{self.__class__.__name__}_{RingSendRecv.__count}"
+        self.input_shape = None
+        self.output_shape = None
+        RingSendRecv.__count += 1
+
+    def __call__(self, input1: Tensor, output: Tensor, src_device: int, dst_device: int, src_core: int, dst_core: int) -> Tensor:
+        # point-to-point transfer of input1 from src_core (on src_device) into
+        # the receive buffer output (on dst_device)
+        assert self.data_type == input1.data_type
+        assert input1.size == output.size
+        assert src_device != dst_device
+        self.input_shape = input1.shape
+        self.output_shape = output.shape
+        self.flop_count = 0
+        self.load_count = input1.size
+        self.store_count = input1.size
+        self.io_count = self.load_count + self.store_count
+        self.peak_memory_usage = 0
+        self.set_core_device(src_core)
+
+        new_output = Tensor(shape=output.shape, data_type=output.data_type, reuse_t=output)
+        DependencyGraph.add_node_to_graph(
+            new_output,
+            [input1],
+            self.__class__.__name__,
+            self.name,
+            self.desc,
+            core=self.core_device,
+            extra={
+                "src_device": str(src_device),
+                "dst_device": str(dst_device),
+                "src_core": str(src_core),
+                "dst_core": str(dst_core),
+                "bytes": input1.size * input1.data_type.word_size,
+            },
+        )
+        return new_output
