@@ -201,6 +201,12 @@ class TransformerBlockInitComputationTP(Operator):
         h0_matmul_out = [Tensor([b, s, d]) for _ in range(dev_cnt)]
         all_h0_matmul_out: List[Tensor] = []
 
+        # per-chiplet Q/K/V, used by the attention loop after the barrier;
+        # the K/V shards are also handed to decode as the KV cache
+        all_q_T: List[Tensor] = []
+        all_k_T: List[Tensor] = []
+        all_v_T: List[Tensor] = []
+
         # multi-head attention
 
         for device_id in range(device_count):
@@ -310,28 +316,43 @@ class TransformerBlockInitComputationTP(Operator):
             assert v_T.shape == [b, h // dev_cnt, s, d_h]
             v_T.set_desc("V_cache_")
 
+            all_q_T.append(q_T)
+            all_k_T.append(k_T)
+            all_v_T.append(v_T)
+
+        # synchronizes all cores/devices at this point
+        _ = AllChipletBarrierSync(self.data_type)()
+
+        for device_id in range (device_count):
+            base_device_id = device_id * self.device_count_sz
+            # Shards the Q, K, V calculation on different devices
+            start_idx = device_id * (self.d_model // dev_cnt)
+            end_idx = (device_id + 1) * (self.d_model // dev_cnt)
+
+            # this chiplet's Q/K/V from the loop above
+            q_T = all_q_T[device_id]
+            k_T = all_k_T[device_id]
+            v_T = all_v_T[device_id]
+
             # Attention Head Calculation
             attn_head_core_ids = []
             all_h0: List[Tensor] = []
             max_used_core_id = self.V_transpose[device_id].core_device + 1
-            rem_cores = self.device_count_sz - max_used_core_id
+            rem_cores = ((device_id + 1) * self.device_count_sz) - max_used_core_id
 
             heads_on_device = h // dev_cnt
             start_head = device_id * heads_on_device
             end_head = (device_id + 1) * heads_on_device
-
-            # synchronizes all cores/devices at this point
-            _ = AllChipletBarrierSync(self.data_type)()
             
             # maps a core to the most recent tensor it produces
             most_recent_tensor = {}
             all_out_tensors = []
             for i in range(start_head, end_head):
-                target_core_id = min((max_used_core_id + (i % rem_cores)), (device_id + 1) * self.device_count_sz - 1)
-                # target_core_id = min((device_id * self.device_count_sz) + (self.device_count_sz - 1), (device_id + 1) * self.device_count_sz - 1)
+                # target_core_id = base_device_id + ((i - start_head) % self.device_count_sz)
+                target_core_id = ((device_id + 1) * self.device_count_sz) - 1
                 
-                q_T_i = q_T[:, i, :, :]
-                K_T_i = k_T[:, i, :, :]
+                q_T_i = q_T[:, i - start_head, :, :]
+                K_T_i = k_T[:, i - start_head, :, :]
                 a_out_i = a_out[:, i, :, :]
                 
                 q_T_offset = SymbolTable.get_base_address(q_T_i) - SymbolTable.get_base_address(q_T)
@@ -368,7 +389,7 @@ class TransformerBlockInitComputationTP(Operator):
                 softmax_obj.set_core_device(target_core_id)
                 a_prob = softmax_obj(new_a_out)
                 
-                V_T_i = v_T[:, i, :, :]
+                V_T_i = v_T[:, i - start_head, :, :]
                 h0_out_i = h0_out[:, i, :, :]
 
                 V_T_offset = SymbolTable.get_base_address(V_T_i) - SymbolTable.get_base_address(v_T)
@@ -453,7 +474,7 @@ class TransformerBlockInitComputationTP(Operator):
             }
 
             self.H_matmul0[device_id].set_core_device(all_reduce_obj.core_device)
-            out = self.H_matmul0[device_id](h0, self.W0, h0_matmul_out_i)  #  [b, s, d]
+            out = self.H_matmul0[device_id](h0, W0_i, h0_matmul_out_i)  #  [b, s, d]
             assert out.shape == [b, s, d]
 
             self.layer_norm0[device_id].set_core_device(all_reduce_obj.core_device)
@@ -529,7 +550,7 @@ class TransformerBlockInitComputationTP(Operator):
                 "desc" : "H_matmul2",
                 "device_id" : device_id,
                 h1.name : {
-                    "base_addr" : SymbolTable.get_base_address(h1_matmul_out_i),
+                    "base_addr" : SymbolTable.get_base_address(h1_matmul_out),
                     "offset": h1_matmul_out_i_offset,
                 },
                 W2_i.name : {
@@ -562,7 +583,7 @@ class TransformerBlockInitComputationTP(Operator):
                 h2 = out
 
         assert out.shape == [b, s, d]
-        return out, k_T, v_T
+        return out, all_k_T, all_v_T
 
 
 class TransformerBlockAutoRegressionTP(Operator):
@@ -727,7 +748,7 @@ class TransformerBlockAutoRegressionTP(Operator):
         self.allreduce_ffn = AllReduceMultiPCB(data_type)
         self.allreduce_ffn.set_core_device((device_count * device_count_sz) - 1)
 
-    def __call__(self, x: Tensor, seq_len: int, K_cache:Tensor, V_cache:Tensor) -> Tensor:
+    def __call__(self, x: Tensor, seq_len: int, K_cache: Optional[List[Tensor]], V_cache: Optional[List[Tensor]]) -> Tensor:
         # b: batch size
         # s: sequence length
         # d: hidden dimension
@@ -739,12 +760,16 @@ class TransformerBlockAutoRegressionTP(Operator):
         dev_cnt = self.device_count
         d_h = self.d_head
 
-        # KV cache
-        K_cache = Tensor([b, h, d_h, s], self.data_type)
-        K_cache.set_desc("K_cache")
+        # KV cache: one shard of h / dev_cnt heads per chiplet
+        if (K_cache is None):
+            K_cache = [Tensor([b, h // dev_cnt, d_h, s], self.data_type) for _ in range(dev_cnt)]
+            V_cache = [Tensor([b, h // dev_cnt, s, d_h], self.data_type) for _ in range(dev_cnt)]
+            for K_cache_i, V_cache_i in zip(K_cache, V_cache):
+                K_cache_i.set_desc("K_cache")
+                V_cache_i.set_desc("V_cache")
 
-        V_cache = Tensor([b, h, s, d_h], self.data_type)
-        V_cache.set_desc("V_cache")
+        assert len(K_cache) == dev_cnt
+        assert len(V_cache) == dev_cnt
 
         # multi-head attention
         self.q = Tensor([b, 1, d])
@@ -762,6 +787,11 @@ class TransformerBlockAutoRegressionTP(Operator):
 
         h0_matmul_out = [Tensor([b, 1, d]) for _ in range(dev_cnt)]
         all_h0_matmul_out: List[Tensor] = []
+
+        # per-chiplet Q and updated K/V cache, used by the attention loop after the barrier
+        all_q_T: List[Tensor] = []
+        all_K_T: List[Tensor] = []
+        all_V_T: List[Tensor] = []
 
         # _ = self.prefetch[0](x)
         # _ = AllChipletBarrierSync(self.data_type)()
@@ -871,37 +901,55 @@ class TransformerBlockAutoRegressionTP(Operator):
             v_T = self.V_transpose[device_id](new_v, [0, 2, 1, 3])
             assert v_T.shape == [b, h // dev_cnt, 1, d_h]
 
-            K_T = self.K_concat[device_id](K_cache[:, start_head_idx:end_head_idx, :, :], k_T, 3, branch_K_T_i)
+            K_cache_i = K_cache[device_id]
+            V_cache_i = V_cache[device_id]
+            assert K_cache_i.shape == [b, h // dev_cnt, d_h, s]
+            assert V_cache_i.shape == [b, h // dev_cnt, s, d_h]
+
+            K_T = self.K_concat[device_id](K_cache_i, k_T, 3, branch_K_T_i)
             assert K_T.shape == [b, h // dev_cnt, d_h, s + 1]
 
-            V_T = self.V_concat[device_id](V_cache[:, start_head_idx:end_head_idx, :, :], v_T, 2, branch_V_T_i)
+            V_T = self.V_concat[device_id](V_cache_i, v_T, 2, branch_V_T_i)
             assert V_T.shape == [b, h // dev_cnt, s + 1, d_h]
 
+            all_q_T.append(q_T)
+            all_K_T.append(K_T)
+            all_V_T.append(V_T)
+
+        # synchronizes all cores/devices at this point
+        _ = AllChipletBarrierSync(self.data_type)()
+
+        for device_id in range(device_count):
+            base_device_id = device_id * self.device_count_sz
+            start_idx = device_id * (self.d_model // dev_cnt)
+            end_idx = (device_id + 1) * (self.d_model // dev_cnt)
+
+            # this chiplet's Q and updated K/V cache from the loop above
+            q_T = all_q_T[device_id]
+            K_T = all_K_T[device_id]
+            V_T = all_V_T[device_id]
 
             # Attention Head Calculation
             attn_head_core_ids = []
             all_h0: List[Tensor] = []
             max_used_core_id = self.V_concat[device_id].core_device + 1
-            rem_cores = self.device_count_sz - max_used_core_id
+            rem_cores = ((device_id + 1) * self.device_count_sz) - max_used_core_id
 
             heads_on_device = h // dev_cnt
             start_head = device_id * heads_on_device
             end_head = (device_id + 1) * heads_on_device
 
-            # synchronizes all cores/devices at this point
-            _ = AllChipletBarrierSync(self.data_type)()
-            
             # maps a core to the most recent tensor it produces
             most_recent_tensor = {}
             all_out_tensors = []
             attn_head_core_start = max_used_core_id
             for i in range(start_head, end_head):
-                target_core_id = min(attn_head_core_start + (i % rem_cores), (device_id + 1) * self.device_count_sz - 1)
+                # target_core_id = base_device_id + ((i - start_head) % self.device_count_sz)
+                target_core_id = ((device_id + 1) * self.device_count_sz) - 1
                 print(f"target core id: {target_core_id}")
-                # target_core_id = min((device_id * self.device_count_sz) + (self.device_count_sz - 1), (device_id + 1) * self.device_count_sz - 1)
 
-                q_T_i = q_T[:, i, :, :]
-                K_T_i = K_T[:, i, :, :]
+                q_T_i = q_T[:, i - start_head, :, :]
+                K_T_i = K_T[:, i - start_head, :, :]
                 a_out_i = a_out[:, i, :, :]
                 
                 q_T_offset = SymbolTable.get_base_address(q_T_i) - SymbolTable.get_base_address(q_T)
@@ -937,7 +985,7 @@ class TransformerBlockAutoRegressionTP(Operator):
                 softmax_obj.set_core_device(target_core_id)
                 a_prob = softmax_obj(new_a_out)
 
-                V_T_i = V_T[:, i, :, :]
+                V_T_i = V_T[:, i - start_head, :, :]
                 h0_out_i = h0_out[:, i, :, :]
 
                 V_T_offset = SymbolTable.get_base_address(V_T_i) - SymbolTable.get_base_address(V_T)
@@ -1010,7 +1058,7 @@ class TransformerBlockAutoRegressionTP(Operator):
                 "device_id" : device_id,
                 h0.name : {
                     "base_addr" : SymbolTable.get_base_address(h0_out),
-                    "offset": h0_offset, 
+                    "offset": h0_offset,
                 },
                 W0_i.name : {
                     "base_addr" : SymbolTable.get_base_address(self.W0),
@@ -1023,7 +1071,7 @@ class TransformerBlockAutoRegressionTP(Operator):
             }
 
             self.H_matmul0[device_id].set_core_device(all_reduce_obj.core_device)
-            out = self.H_matmul0[device_id](h0, self.W0, h0_matmul_out_i)  #  [b, 1, d]
+            out = self.H_matmul0[device_id](h0, W0_i, h0_matmul_out_i)  #  [b, 1, d]
             assert out.shape == [b, 1, d]
 
             self.layer_norm0[device_id].set_core_device(all_reduce_obj.core_device)
@@ -1100,7 +1148,7 @@ class TransformerBlockAutoRegressionTP(Operator):
                 "desc" : "H_matmul2",
                 "device_id" : device_id,
                 h1.name : {
-                    "base_addr" : SymbolTable.get_base_address(h1_matmul_out_i),
+                    "base_addr" : SymbolTable.get_base_address(h1_matmul_out),
                     "offset": h1_matmul_out_i_offset,
                 },
                 W2_i.name : {
@@ -1428,7 +1476,7 @@ class GPTModel:
 if __name__ == "__main__":
     from pathlib import Path
 
-    d_model = 192
+    d_model = 768
     n_heads = 12
     d_head = d_model//n_heads
     n_blocks = 1
@@ -1464,7 +1512,7 @@ if __name__ == "__main__":
     logits = model.forward(x, seq_len=seq_len)
 
     symbol_table_path = Path("symbol_table.json")
-    dep_graph_path = Path("no_prefetch_tiny.json")
+    dep_graph_path = Path("small_decode_2048_tokens_4_core_4_chiplet.json")
 
     SymbolTable.dump_symbol_table_to_json(symbol_table_path)
     DependencyGraph.dump_graph_to_json(dep_graph_path)

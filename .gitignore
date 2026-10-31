@@ -4,3 +4,5 @@ temp/
 .vscode/
 *.ncu-rep
 .llmcompass_env
+*.json
+*.png
