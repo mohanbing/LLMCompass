@@ -9,17 +9,17 @@
             "latency_second": 8.92e-6,
             "flit_size_byte": 16,
             "header_size_byte": 16,
-            "max_payload_size_byte": 256
+            "max_payload_size_byte": 128
         },
         "link_count_per_device": 12,
         "topology": "MESH"
     },
     "device": {
         "frequency_Hz": 1e9,
-        "compute_chiplet_count": 2,
+        "compute_chiplet_count": 1,
         "compute_chiplet": {
-            "core_count": 8,
-            "process_node": "3nm",
+            "core_count": 1,
+            "process_node": "5nm",
             "core": {
                 "sublane_count": 1,
                 "systolic_array": {
@@ -43,10 +43,21 @@
                     "register_bitwidth":32,
                     "num_rdwr_ports":4
                 },
-                "L0_SRAM_KB": 1024
+                "L0_SRAM_KB": 2048
             },
             "L1_SRAM_KB" : 4096,
-            "L2_SRAM_KB" : 16384
+            "L2_SRAM_KB" : 0,
+            "d2d": {
+                "phy": "UCIe-S",
+                "bandwidth_byte": 2.56e+11,
+                "data_rate_GTs": 32
+            },
+            "c2c": {
+                "phy": "UCIe-S",
+                "topology": "ring",
+                "bandwidth_per_link_byte": 2.56e+11,
+                "data_rate_GTs": 32
+            }
         },
         "memory_protocol": "HBM2e",
         "_memory_protocol_list": [

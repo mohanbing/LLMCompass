@@ -185,8 +185,9 @@ class LayerNorm(Operator):
             self.read_cycle_count = self.simulate_l2_tile_io_cycle_count(
                 M, N, data_type, pcb_module
             )
-            self.write_cycle_count = self.simulate_l2_tile_io_cycle_count(
-                M, N, data_type, pcb_module
+            # write-back to HBM (packetized if io_module says so)
+            self.write_cycle_count = pcb_module.io_module.write_cycle_count(
+                M * N * data_type.word_size, pcb_module.compute_module.clock_freq
             )
             self.compute_cycle_count = self.simulate_l2_tile_compute_cycle_count(
                 M, N, data_type, mapping, pcb_module
@@ -195,14 +196,8 @@ class LayerNorm(Operator):
         def simulate_l2_tile_io_cycle_count(
             self, M: int, N: int, data_type: DataType, chiplet_module: Device
         ):
-            return ceil(
-                M
-                * N
-                * data_type.word_size
-                / (
-                    chiplet_module.io_module.bandwidth
-                    / chiplet_module.compute_module.clock_freq
-                )
+            return chiplet_module.io_module.transfer_cycle_count(
+                M * N * data_type.word_size, chiplet_module.compute_module.clock_freq
             )
 
         def simulate_l2_tile_compute_cycle_count(
@@ -256,6 +251,10 @@ class LayerNorm(Operator):
             )
             self.write_cycle_count = self.simulate_l1_tile_io_cycle_count(
                 M, N, data_type, pcb_module
+            ) + pcb_module.compute_module.l2_write_packet_cycle_count(
+                pcb_module.compute_module.l2_write_packet_count(
+                    M * N * data_type.word_size
+                )
             )
             self.reduction_cycle_count = (
                 M
@@ -268,6 +267,11 @@ class LayerNorm(Operator):
                 / (
                     pcb_module.compute_module.l2_bandwidth_per_cycle
                     / pcb_module.compute_module.core_count
+                )
+                + pcb_module.compute_module.l2_write_packet_cycle_count(
+                    pcb_module.compute_module.l2_write_packet_count(
+                        M * N * data_type.word_size
+                    )
                 )
             )
 

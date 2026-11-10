@@ -6,3 +6,4 @@ temp/
 .llmcompass_env
 *.json
 *.pngthird_party/
+*.png

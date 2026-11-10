@@ -124,12 +124,25 @@ class ComputeModule:
         l2_size,
         l2_bandwidth_per_cycle,
         overhead: Overhead = overhead_dict["A100"],
+        l2_partition=None,
+        l2_write_packet_size_byte=None,
+        l2_write_packet_latency_cycles=0,
     ):
         self.core = core
         self.core_count = core_count
         self.clock_freq = clock_freq
         self.l2_size = int(l2_size)  # Byte
         self.l2_bandwidth_per_cycle = l2_bandwidth_per_cycle  # Byte/clock
+        # Optional (ifmap, weight, output) fractions of l2_size. When set, each
+        # operand gets its own l2 chunk, the core SRAM holds only ifmap tiles,
+        # and weights / outputs stream between l2 and the systolic array
+        # (no reuse from core SRAM). None = original shared-pool behavior.
+        self.l2_partition = l2_partition
+        # On-chip write packets (core / systolic array -> l2): max payload in
+        # bytes and fixed latency per packet. Packets are split without padding
+        # or metadata. None = original behavior (bytes / bandwidth only).
+        self.l2_write_packet_size_byte = l2_write_packet_size_byte
+        self.l2_write_packet_latency_cycles = l2_write_packet_latency_cycles
         self.total_vector_flops_per_cycle = (
             core.vector_unit.total_vector_flops_per_cycle * core_count
         )
@@ -144,6 +157,22 @@ class ComputeModule:
             * clock_freq
         )
         self.overhead = overhead
+
+    def l2_write_packet_count(self, size_byte):
+        """Number of on-chip write packets for one write of size_byte."""
+        if not self.l2_write_packet_size_byte or size_byte <= 0:
+            return 0
+        return ceil(size_byte / self.l2_write_packet_size_byte)
+
+    def l2_write_packet_cycle_count(self, packet_count, parallel_ports=1):
+        """Extra cycles for packet_count on-chip write packets.
+
+        Packets spread over parallel_ports independent per-core ports; each
+        port sends its packets one after another.
+        """
+        if not self.l2_write_packet_size_byte:
+            return 0
+        return ceil(packet_count / parallel_ports) * self.l2_write_packet_latency_cycles
 
 
 compute_module_dict = {

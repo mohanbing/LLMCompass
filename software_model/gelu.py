@@ -77,10 +77,22 @@ class GeLU(Operator):
         M = ceil(self.computational_graph.M / parallelism) * parallelism
         data_type = self.computational_graph.data_type
         total_io_count = M * 2 * data_type.word_size
+        write_size = M * data_type.word_size
         io_latency = (
             total_io_count / pcb_module.io_module.bandwidth
+            # one HBM read pays the hop latency once; the HBM write pays it
+            # once per write packet (once if writes aren't packetized)
+            + (1 + pcb_module.io_module.write_packet_count(write_size))
+            * pcb_module.io_module.hop_latency_cycles
+            / pcb_module.compute_module.clock_freq
             + total_io_count
             / pcb_module.compute_module.l2_bandwidth_per_cycle
+            / pcb_module.compute_module.clock_freq
+            # on-chip write packets back to l2, spread over the cores
+            + pcb_module.compute_module.l2_write_packet_cycle_count(
+                pcb_module.compute_module.l2_write_packet_count(write_size),
+                pcb_module.compute_module.core_count,
+            )
             / pcb_module.compute_module.clock_freq
         )
         total_flop_count = M * (

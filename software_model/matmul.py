@@ -311,6 +311,73 @@ class Matmul(Operator):
 
         return list(permutations)
 
+    @staticmethod
+    def _l2_tile_fits(m, n, k, l2_words, l2_partition=None):
+        """Whether an (m, n, k) L2 tile fits a budget of l2_words elements.
+
+        Without a partition the three operands share the budget. With an
+        (ifmap, weight, output) partition each operand must fit its own share.
+        """
+        if l2_partition is None:
+            return m * n + n * k + m * k <= l2_words
+        f_in, f_w, f_out = l2_partition
+        return (
+            m * k <= f_in * l2_words
+            and k * n <= f_w * l2_words
+            and m * n <= f_out * l2_words
+        )
+
+    @staticmethod
+    def _heuristic_tpu_l2_tiles(M, N, K, l2_words, l2_partition=None):
+        """L2 tile candidates for the heuristic-TPU modes.
+
+        l2_words is the double-buffered L2 budget in elements. If the whole
+        matmul fits, return it as the only tile (the original behavior).
+        Otherwise return the maximal (M, N, K) tiles, each dim being the full
+        size or a power of two below it, that fit (see _l2_tile_fits).
+        """
+
+        def fits(m, n, k):
+            return Matmul._l2_tile_fits(m, n, k, l2_words, l2_partition)
+
+        if fits(M, N, K):
+            return [(M, N, K)]
+
+        def dim_candidates(d):
+            return sorted({d} | {2**i for i in range(ceil(log2(d)))})
+
+        def grow(v, d):
+            # next larger candidate for a dim (None if already at full size)
+            if v == d:
+                return None
+            return min(v * 2, d)
+
+        cands_M, cands_N, cands_K = (dim_candidates(d) for d in (M, N, K))
+        tiles = []
+        for m in cands_M:
+            for n in cands_N:
+                for k in cands_K:
+                    if not fits(m, n, k):
+                        continue
+                    maximal = True
+                    for gm, gn, gk in (
+                        (grow(m, M), n, k),
+                        (m, grow(n, N), k),
+                        (m, n, grow(k, K)),
+                    ):
+                        if None in (gm, gn, gk):
+                            continue
+                        if fits(gm, gn, gk):
+                            maximal = False
+                            break
+                    if maximal:
+                        tiles.append((m, n, k))
+        assert tiles, (
+            f"global buffer (L2) of {l2_words * 2} elements is too small "
+            f"for any L2 tile of matmul M={M} N={N} K={K}"
+        )
+        return tiles
+
     def compile_and_simulate(
         self,
         pcb_module: Device,
@@ -632,141 +699,171 @@ class Matmul(Operator):
                                         best_mapping = mapping
             # print("total dse times:", i)
         elif compile_mode == "heuristic-TPU":
-            l2_tile_M = self.computational_graph.M
-            l2_tile_N = self.computational_graph.N
-            l2_tile_K = self.computational_graph.K
+            l2_partitioned = pcb_module.compute_module.l2_partition is not None
+            l2_words = (
+                pcb_module.compute_module.l2_size // self.data_type.word_size // 2
+            )
+            for l2_tile_M, l2_tile_N, l2_tile_K in self._heuristic_tpu_l2_tiles(
+                self.computational_graph.M,
+                self.computational_graph.N,
+                self.computational_graph.K,
+                l2_words,
+                pcb_module.compute_module.l2_partition,
+            ):
+                is_l2_double_buffering = True
+                for l1_tile_M in [l2_tile_M, 64, 128, 256, 512, 1024, 2048, 4096, 8192]:
+                    if l1_tile_M > l2_tile_M * 2:
+                        continue
+                    for l1_tile_N in [
+                        l1_tile_M // 2,
+                        l1_tile_M,
+                        l1_tile_M * 2,
+                        l1_tile_M * 8,
+                        l1_tile_M * 16,
+                        l1_tile_M * 64,
+                        l1_tile_M * 128,
+                        l1_tile_M * 256,
+                    ] + ([l2_tile_N] if l2_partitioned else []):
+                        if l1_tile_N > l2_tile_N:
+                            continue
+                        if l1_tile_N <= 0:
+                            continue
+                        if l2_partitioned:
+                            # core SRAM holds only the (double-buffered) ifmap tile
+                            l1_tile_K_max = (
+                                pcb_module.compute_module.core.SRAM_size
+                                // self.data_type.word_size
+                                // 2
+                            ) // l1_tile_M
+                        else:
+                            l1_tile_K_max = (
+                                pcb_module.compute_module.core.SRAM_size
+                                // self.data_type.word_size
+                                // 2
+                                - l1_tile_M * l1_tile_N
+                            ) // (l1_tile_M + l1_tile_N)
+                        if l1_tile_K_max < 1:
+                            continue
+                        l1_tile_K = min(l1_tile_K_max, l2_tile_K)
+                        l1_tile_K = floor(log2(l1_tile_K))
+                        l1_tile_K = 2**l1_tile_K
 
-            is_l2_double_buffering = True
-            for l1_tile_M in [l2_tile_M, 64, 128, 256, 512, 1024, 2048, 4096, 8192]:
-                if l1_tile_M > l2_tile_M * 2:
-                    continue
-                for l1_tile_N in [
-                    l1_tile_M // 2,
-                    l1_tile_M,
-                    l1_tile_M * 2,
-                    l1_tile_M * 8,
-                    l1_tile_M * 16,
-                    l1_tile_M * 64,
-                    l1_tile_M * 128,
-                    l1_tile_M * 256,
-                ]:
-                    if l1_tile_N > l2_tile_N:
-                        continue
-                    if l1_tile_N <= 0:
-                        continue
-                    l1_tile_K_max = (
-                        pcb_module.compute_module.core.SRAM_size
-                        // self.data_type.word_size
-                        // 2
-                        - l1_tile_M * l1_tile_N
-                    ) // (l1_tile_M + l1_tile_N)
-                    if l1_tile_K_max < 1:
-                        continue
-                    l1_tile_K = min(l1_tile_K_max, l2_tile_K)
-                    l1_tile_K = floor(log2(l1_tile_K))
-                    l1_tile_K = 2**l1_tile_K
-
-                    l2_loop_order = "knm"
-                    l1_loop_order = "knm"
-                    for (
-                        l0_M_tiling_factor,
-                        l0_N_tiling_factor,
-                        l0_K_tiling_factor,
-                    ) in [(1, 2, 1)]:
-                        mapping = self.Mapping(
-                            l2_tile_M,
-                            l2_tile_N,
-                            l2_tile_K,
-                            is_l2_double_buffering,
-                            l1_tile_M,
-                            l1_tile_N,
-                            l1_tile_K,
-                            l2_loop_order,
-                            l1_loop_order,
+                        l2_loop_order = "knm"
+                        l1_loop_order = "knm"
+                        for (
                             l0_M_tiling_factor,
                             l0_N_tiling_factor,
                             l0_K_tiling_factor,
-                        )
-                        # mapping.display()
-                        # start=time.time()
-                        cycle_count = self.simulate(
-                            self.computational_graph,
-                            mapping,
-                            pcb_module,
-                        )
-                        # end=time.time()
-                        # print(f'simulation time: {end-start}')
-                        if cycle_count < min_cycle_count:
-                            min_cycle_count = cycle_count
-                            best_mapping = mapping
+                        ) in [(1, 2, 1)]:
+                            mapping = self.Mapping(
+                                l2_tile_M,
+                                l2_tile_N,
+                                l2_tile_K,
+                                is_l2_double_buffering,
+                                l1_tile_M,
+                                l1_tile_N,
+                                l1_tile_K,
+                                l2_loop_order,
+                                l1_loop_order,
+                                l0_M_tiling_factor,
+                                l0_N_tiling_factor,
+                                l0_K_tiling_factor,
+                            )
+                            # mapping.display()
+                            # start=time.time()
+                            cycle_count = self.simulate(
+                                self.computational_graph,
+                                mapping,
+                                pcb_module,
+                            )
+                            # end=time.time()
+                            # print(f'simulation time: {end-start}')
+                            if cycle_count < min_cycle_count:
+                                min_cycle_count = cycle_count
+                                best_mapping = mapping
         elif compile_mode == "heuristic-TPU-new":
-            l2_tile_M = self.computational_graph.M
-            l2_tile_N = self.computational_graph.N
-            l2_tile_K = self.computational_graph.K
+            l2_partitioned = pcb_module.compute_module.l2_partition is not None
+            l2_words = (
+                pcb_module.compute_module.l2_size // self.data_type.word_size // 2
+            )
+            for l2_tile_M, l2_tile_N, l2_tile_K in self._heuristic_tpu_l2_tiles(
+                self.computational_graph.M,
+                self.computational_graph.N,
+                self.computational_graph.K,
+                l2_words,
+                pcb_module.compute_module.l2_partition,
+            ):
+                is_l2_double_buffering = True
+                for l1_tile_M in [l2_tile_M, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192]:
+                    if l1_tile_M > l2_tile_M * 2:
+                        continue
+                    for l1_tile_N in [
+                        l1_tile_M // 2,
+                        l1_tile_M,
+                        l1_tile_M * 2,
+                        l1_tile_M * 8,
+                        l1_tile_M * 16,
+                        l1_tile_M * 64,
+                        l1_tile_M * 128,
+                        l1_tile_M * 256,
+                    ] + ([l2_tile_N] if l2_partitioned else []):
+                        if l1_tile_N > l2_tile_N:
+                            continue
+                        if l1_tile_N <= 0:
+                            continue
+                        if l2_partitioned:
+                            # core SRAM holds only the (double-buffered) ifmap tile
+                            l1_tile_K_max = (
+                                pcb_module.compute_module.core.SRAM_size
+                                // self.data_type.word_size
+                                // 2
+                            ) // l1_tile_M
+                        else:
+                            l1_tile_K_max = (
+                                pcb_module.compute_module.core.SRAM_size
+                                // self.data_type.word_size
+                                // 2
+                                - l1_tile_M * l1_tile_N
+                            ) // (l1_tile_M + l1_tile_N)
+                        if l1_tile_K_max < 1:
+                            continue
+                        l1_tile_K = min(l1_tile_K_max, l2_tile_K)
+                        l1_tile_K = floor(log2(l1_tile_K))
+                        l1_tile_K = 2**l1_tile_K
 
-            is_l2_double_buffering = True
-            for l1_tile_M in [l2_tile_M, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192]:
-                if l1_tile_M > l2_tile_M * 2:
-                    continue
-                for l1_tile_N in [
-                    l1_tile_M // 2,
-                    l1_tile_M,
-                    l1_tile_M * 2,
-                    l1_tile_M * 8,
-                    l1_tile_M * 16,
-                    l1_tile_M * 64,
-                    l1_tile_M * 128,
-                    l1_tile_M * 256,
-                ]:
-                    if l1_tile_N > l2_tile_N:
-                        continue
-                    if l1_tile_N <= 0:
-                        continue
-                    l1_tile_K_max = (
-                        pcb_module.compute_module.core.SRAM_size
-                        // self.data_type.word_size
-                        // 2
-                        - l1_tile_M * l1_tile_N
-                    ) // (l1_tile_M + l1_tile_N)
-                    if l1_tile_K_max < 1:
-                        continue
-                    l1_tile_K = min(l1_tile_K_max, l2_tile_K)
-                    l1_tile_K = floor(log2(l1_tile_K))
-                    l1_tile_K = 2**l1_tile_K
-
-                    l2_loop_order = "knm"
-                    l1_loop_order = "knm"
-                    for (
-                        l0_M_tiling_factor,
-                        l0_N_tiling_factor,
-                        l0_K_tiling_factor,
-                    ) in [(1, 1, 1)]:
-                        mapping = self.Mapping(
-                            l2_tile_M,
-                            l2_tile_N,
-                            l2_tile_K,
-                            is_l2_double_buffering,
-                            l1_tile_M,
-                            l1_tile_N,
-                            l1_tile_K,
-                            l2_loop_order,
-                            l1_loop_order,
+                        l2_loop_order = "knm"
+                        l1_loop_order = "knm"
+                        for (
                             l0_M_tiling_factor,
                             l0_N_tiling_factor,
                             l0_K_tiling_factor,
-                        )
-                        # mapping.display()
-                        # start=time.time()
-                        cycle_count = self.simulate(
-                            self.computational_graph,
-                            mapping,
-                            pcb_module,
-                        )
-                        # end=time.time()
-                        # print(f'simulation time: {end-start}')
-                        if cycle_count < min_cycle_count:
-                            min_cycle_count = cycle_count
-                            best_mapping = mapping
+                        ) in [(1, 1, 1)]:
+                            mapping = self.Mapping(
+                                l2_tile_M,
+                                l2_tile_N,
+                                l2_tile_K,
+                                is_l2_double_buffering,
+                                l1_tile_M,
+                                l1_tile_N,
+                                l1_tile_K,
+                                l2_loop_order,
+                                l1_loop_order,
+                                l0_M_tiling_factor,
+                                l0_N_tiling_factor,
+                                l0_K_tiling_factor,
+                            )
+                            # mapping.display()
+                            # start=time.time()
+                            cycle_count = self.simulate(
+                                self.computational_graph,
+                                mapping,
+                                pcb_module,
+                            )
+                            # end=time.time()
+                            # print(f'simulation time: {end-start}')
+                            if cycle_count < min_cycle_count:
+                                min_cycle_count = cycle_count
+                                best_mapping = mapping
         else:
             raise ValueError(f"compile_mode {compile_mode} not supported")
         self.best_mapping = best_mapping
@@ -827,16 +924,15 @@ class Matmul(Operator):
         l2_tile_N = mapping.l2_tile_N
         l2_tile_K = mapping.l2_tile_K
 
-        if mapping.is_l2_double_buffering:
-            assert (
-                l2_tile_M * l2_tile_N + l2_tile_N * l2_tile_K + l2_tile_M * l2_tile_K
-                <= pcb_module.compute_module.l2_size // self.data_type.word_size // 2
-            )
-        else:
-            assert (
-                l2_tile_M * l2_tile_N + l2_tile_N * l2_tile_K + l2_tile_M * l2_tile_K
-                <= pcb_module.compute_module.l2_size // self.data_type.word_size
-            )
+        assert self._l2_tile_fits(
+            l2_tile_M,
+            l2_tile_N,
+            l2_tile_K,
+            pcb_module.compute_module.l2_size
+            // self.data_type.word_size
+            // (2 if mapping.is_l2_double_buffering else 1),
+            pcb_module.compute_module.l2_partition,
+        )
 
         # calculate total number of tiles and the remainders if
         # not perfectly divisible
@@ -988,7 +1084,7 @@ class Matmul(Operator):
             if m == previous_m and n == previous_n:
                 previous_tile_write_cycle_count = 0
             else:
-                previous_tile_write_cycle_count = previous_l2_tile.M_N_io_cycle_count
+                previous_tile_write_cycle_count = previous_l2_tile.M_N_write_cycle_count
 
             # read current tile, compute previous tile, write previous tile
             if mapping.is_l2_double_buffering:  # pipelined
@@ -1011,7 +1107,7 @@ class Matmul(Operator):
 
         # compute and write last tile
         total_cycle_count += (
-            l2_tiles[-1, -1, -1].M_N_io_cycle_count
+            l2_tiles[-1, -1, -1].M_N_write_cycle_count
             + l2_tiles[-1, -1, -1].compute_cycle_count
         )
 
@@ -1037,13 +1133,21 @@ class Matmul(Operator):
             self.M = M
             self.N = N
             self.K = K
-            self.K_reduction_cycle_count = ceil(
-                M * N / pcb_module.compute_module.total_vector_flops_per_cycle
-            ) + 2 * ceil(
-                M
-                * N
-                * data_type.word_size
-                / pcb_module.compute_module.l2_bandwidth_per_cycle
+            self.K_reduction_cycle_count = (
+                ceil(M * N / pcb_module.compute_module.total_vector_flops_per_cycle)
+                + 2
+                * ceil(
+                    M
+                    * N
+                    * data_type.word_size
+                    / pcb_module.compute_module.l2_bandwidth_per_cycle
+                )
+                + pcb_module.compute_module.l2_write_packet_cycle_count(
+                    pcb_module.compute_module.l2_write_packet_count(
+                        M * N * data_type.word_size
+                    ),
+                    pcb_module.compute_module.core_count,
+                )
             )
             self.K_reduction_io_count = 2 * M * N * data_type.word_size
             self.M_K_io_cycle_count = self.simulate_l2_tile_io_cycle_count(
@@ -1055,6 +1159,10 @@ class Matmul(Operator):
             self.M_N_io_cycle_count = self.simulate_l2_tile_io_cycle_count(
                 M, N, data_type, pcb_module
             )
+            # output write-back to HBM (packetized if io_module says so)
+            self.M_N_write_cycle_count = pcb_module.io_module.write_cycle_count(
+                M * N * data_type.word_size, pcb_module.compute_module.clock_freq
+            )
             self.compute_cycle_count = self.simulate_l2_tile_compute_cycle_count(
                 M, N, K, data_type, mapping, pcb_module, look_up_table
             )
@@ -1062,14 +1170,8 @@ class Matmul(Operator):
         def simulate_l2_tile_io_cycle_count(
             self, M: int, N: int, data_type: DataType, chiplet_module: Device
         ):
-            return ceil(
-                M
-                * N
-                * data_type.word_size
-                / (
-                    chiplet_module.io_module.bandwidth
-                    / chiplet_module.compute_module.clock_freq
-                )
+            return chiplet_module.io_module.transfer_cycle_count(
+                M * N * data_type.word_size, chiplet_module.compute_module.clock_freq
             )
 
         def simulate_l2_tile_compute_cycle_count(
@@ -1211,6 +1313,14 @@ class Matmul(Operator):
             if M_remain > 0 and N_remain > 0:
                 M_N_tile_size[-1, -1] = M_remain * N_remain
 
+            # on-chip write packets per output (M_N) tile
+            M_N_write_packets = np.vectorize(
+                lambda e: chiplet_module.compute_module.l2_write_packet_count(
+                    e * data_type.word_size
+                ),
+                otypes=[int],
+            )(M_N_tile_size)
+
             total_cycle_count = 0
             previous_batch_Read_M_K = np.zeros(
                 [ceil(M / l1_tile_M), ceil(K / l1_tile_K)], dtype=bool
@@ -1285,21 +1395,39 @@ class Matmul(Operator):
                     (current_batch_Read_M_K * (~previous_batch_Read_M_K))
                     * M_K_tile_size
                 )
-                current_batch_K_N_read_count = np.sum(
-                    (current_batch_Read_K_N * (~previous_batch_Read_K_N))
-                    * K_N_tile_size
-                )
-                current_batch_M_N_read_count = np.sum(
-                    (
-                        current_batch_Read_M_N
-                        * (~(previous_batch_Read_M_N + previous_batch_Write_M_N))
+                if chiplet_module.compute_module.l2_partition is None:
+                    current_batch_K_N_read_count = np.sum(
+                        (current_batch_Read_K_N * (~previous_batch_Read_K_N))
+                        * K_N_tile_size
                     )
-                    * M_N_tile_size
-                )
-                previous_batch_M_N_write_count = np.sum(
-                    (previous_batch_Write_M_N * (~current_batch_Read_M_N))
-                    * M_N_tile_size
-                )
+                    current_batch_M_N_read_count = np.sum(
+                        (
+                            current_batch_Read_M_N
+                            * (~(previous_batch_Read_M_N + previous_batch_Write_M_N))
+                        )
+                        * M_N_tile_size
+                    )
+                    previous_batch_M_N_write_mask = previous_batch_Write_M_N * (
+                        ~current_batch_Read_M_N
+                    )
+                    previous_batch_M_N_write_count = np.sum(
+                        previous_batch_M_N_write_mask * M_N_tile_size
+                    )
+                else:
+                    # partitioned l2: core SRAM holds only ifmap tiles. Weights
+                    # stream l2 -> systolic array and outputs/partial sums live
+                    # in the l2 output chunk, so neither is reused across
+                    # batches: every read and every write crosses the l2 port.
+                    current_batch_K_N_read_count = np.sum(
+                        current_batch_Read_K_N * K_N_tile_size
+                    )
+                    current_batch_M_N_read_count = np.sum(
+                        current_batch_Read_M_N * M_N_tile_size
+                    )
+                    previous_batch_M_N_write_mask = previous_batch_Write_M_N
+                    previous_batch_M_N_write_count = np.sum(
+                        previous_batch_M_N_write_mask * M_N_tile_size
+                    )
 
                 # read current batch while compute and write previous batch
                 current_batch_read_count = (
@@ -1316,6 +1444,9 @@ class Matmul(Operator):
                     previous_batch_M_N_write_count
                     * chiplet_module.compute_module.core.systolic_array.output_word_size
                     / chiplet_module.compute_module.l2_bandwidth_per_cycle
+                ) + chiplet_module.compute_module.l2_write_packet_cycle_count(
+                    np.sum(previous_batch_M_N_write_mask * M_N_write_packets),
+                    chiplet_module.compute_module.core_count,
                 )
 
                 total_cycle_count += (
@@ -1335,10 +1466,17 @@ class Matmul(Operator):
                 active_l1_tile_list = []
 
             # last batch's compute and write
-            total_cycle_count += previous_batch_compute_cycle_count + ceil(
-                np.sum(previous_batch_Write_M_N * M_N_tile_size)
-                * data_type.word_size
-                / chiplet_module.compute_module.l2_bandwidth_per_cycle
+            total_cycle_count += (
+                previous_batch_compute_cycle_count
+                + ceil(
+                    np.sum(previous_batch_Write_M_N * M_N_tile_size)
+                    * data_type.word_size
+                    / chiplet_module.compute_module.l2_bandwidth_per_cycle
+                )
+                + chiplet_module.compute_module.l2_write_packet_cycle_count(
+                    np.sum(previous_batch_Write_M_N * M_N_write_packets),
+                    chiplet_module.compute_module.core_count,
+                )
             )
 
             return total_cycle_count
@@ -1372,8 +1510,14 @@ class Matmul(Operator):
             chiplet_module: Device,
             look_up_table: pd.DataFrame,
         ):
+            # partitioned l2: only the ifmap tile lives in core SRAM
+            l1_resident = (
+                M * K
+                if chiplet_module.compute_module.l2_partition is not None
+                else M * K + K * N + M * N
+            )
             assert (
-                M * K + K * N + M * N
+                l1_resident
                 <= chiplet_module.compute_module.core.SRAM_size
                 // data_type.word_size
                 // 2
