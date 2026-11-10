@@ -21,9 +21,9 @@ class DependencyGraph:
         
         if batched_matmul_details:
             cls.graph[op_name] = dict(
-                dep = {f"op_{op_c}":SymbolTable.table[dep.name] for op_c, dep in enumerate(dep_list)},
+                dep = {f"op_{op_c}":SymbolTable.table[dep.key] for op_c, dep in enumerate(dep_list)},
                 op = op,
-                out = SymbolTable.table[target.name],
+                out = SymbolTable.table[target.key],
                 op_desc = op_desc,
                 core = str(core),
                 chiplet = str(0),
@@ -33,9 +33,9 @@ class DependencyGraph:
         else:
             if sharded_matmul_details:
                 cls.graph[op_name] = dict(
-                    dep = {f"op_{op_c}":SymbolTable.table[dep.name] for op_c, dep in enumerate(dep_list)},
+                    dep = {f"op_{op_c}":SymbolTable.table[dep.key] for op_c, dep in enumerate(dep_list)},
                     op = op,
-                    out = SymbolTable.table[target.name],
+                    out = SymbolTable.table[target.key],
                     op_desc = op_desc,
                     core = str(core),
                     chiplet = str(0),
@@ -57,9 +57,9 @@ class DependencyGraph:
                         cls.graph[op_name]["cores"] = [str(c) for c in cores]
                 else:
                     cls.graph[op_name] = dict(
-                        dep = {f"op_{op_c}":SymbolTable.table[dep.name] for op_c, dep in enumerate(dep_list)},
+                        dep = {f"op_{op_c}":SymbolTable.table[dep.key] for op_c, dep in enumerate(dep_list)},
                         op = op,
-                        out = SymbolTable.table[target.name],
+                        out = SymbolTable.table[target.key],
                         op_desc = op_desc,
                         core = str(core),
                         chiplet = str(0),

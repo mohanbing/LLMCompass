@@ -5,4 +5,4 @@ temp/
 *.ncu-rep
 .llmcompass_env
 *.json
-*.png
+*.pngthird_party/

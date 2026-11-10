@@ -1476,15 +1476,16 @@ class GPTModel:
 if __name__ == "__main__":
     from pathlib import Path
 
-    d_model = 768
-    n_heads = 12
+    d_model = 1536
+    n_heads = 24
     d_head = d_model//n_heads
     n_blocks = 1
     device_count = 4
     device_count_sz = 4
     batch_size = 1
-    seq_len = 2048
-    prefill_active = False
+    seq_len = 1024
+    prefill_active = True
+    only_prefill = False
 
     model = GPTModel(
         d_model=d_model,
@@ -1501,9 +1502,12 @@ if __name__ == "__main__":
     if prefill_active:
         prompt = Tensor([batch_size, seq_len, d_model], data_type_dict["fp16"])
         x = model.prefill(prompt=prompt)
-        dep_graph_path = Path("prefill_gpt3_small_128_tokens.json")
+        dep_graph_path = Path("large_prefill_1024_tokens_4_core_4_chiplet.json")
         total_prefill_params = DependencyGraph.get_learnable_parameters()
-        # DependencyGraph.reset_and_dump_graph(dep_graph_path)
+        if only_prefill:
+            DependencyGraph.reset_and_dump_graph(dep_graph_path)
+            print(f"Matmul (Prefill) Learnable Parameter Count: {total_prefill_params}")
+            exit()
 
     # if we turn off prefill and assume it already exists
     else:
@@ -1512,7 +1516,7 @@ if __name__ == "__main__":
     logits = model.forward(x, seq_len=seq_len)
 
     symbol_table_path = Path("symbol_table.json")
-    dep_graph_path = Path("small_decode_2048_tokens_4_core_4_chiplet.json")
+    dep_graph_path = Path("large_pd_1024_tokens_4_core_4_chiplet.json")
 
     SymbolTable.dump_symbol_table_to_json(symbol_table_path)
     DependencyGraph.dump_graph_to_json(dep_graph_path)
@@ -1520,5 +1524,4 @@ if __name__ == "__main__":
 
     print("symbol table dumped to: ", symbol_table_path)
     print("dep graph dumped to: ", dep_graph_path)
-    # print(f"Matmul (Prefill) Learnable Parameter Count: {total_prefill_params}")
     print(f"Matmul (Decode) Learnable Parameter Count: {total_decode_params}")
