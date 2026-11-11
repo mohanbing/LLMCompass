@@ -12,13 +12,37 @@ import math
 transistor_density_7nm = 96.3
 transistor_density_6nm = 114.2
 transistor_density_5nm = 138.2
-transistor_density_3nm = 224.0
+transistor_density_3nm = 216.0
 transistor_density_90nm = 1.6
 
+# "effective" SRAM area per bit in mm2, used by calc_cache_sram_area_mm2 (the 'table' SRAM model)
+# these are ~6x larger than published foundry bitcells (below) and should not be read as
+# physical bitcell sizes. they act as a calibration factor for the whole die:
+#   - with these values GA100.json totals 826.8 mm2 (584.0 compute + 242.8 IO), matching the
+#     real 826 mm2 GA100 die. with published bitcells it drops to 676.4 mm2, i.e. the inflation
+#     accounts for ~150 mm2 (~18%) of the A100 die
+#   - the rest of the model underestimates area, so the SRAM term absorbs the difference:
+#     logic uses peak foundry density (96.3 MTr/mm2 at 7nm) while A100 achieves
+#     54.2B / 826 mm2 = ~66 MTr/mm2, and the model omits whole blocks (NoC / L2 crossbar,
+#     GPC front end, texture/RT units, pad ring, power delivery, whitespace)
+#   - GPU caches also carry tags and ECC, use larger high-current (HC) bitcells for
+#     bandwidth, and are heavily banked, all of which the efficiency table does not capture
+#   - the ratio to published bitcells is roughly constant across nodes (~6.3x at 7nm,
+#     ~5.2x at 6nm, ~6x at 5nm/3nm), so these look like real bitcells times a fixed factor
+#     tuned to hit the A100 die area, rather than independent measurements
+# keep these for the 'table' model and the ae/ figures, which depend on the A100 calibration
 sram_bit_cell_density_7nm = 1.70e-07
 sram_bit_cell_density_6nm = 1.40e-07
 sram_bit_cell_density_5nm = 1.25e-07
 sram_bit_cell_density_3nm = 1.25e-07
+
+# published high-density 6T bitcell areas in mm2 (TSMC: N7 ISSCC 2017, N5 IEDM 2019,
+# N3E IEDM 2022; N6 reuses the N7 cell). used by the CACTI SRAM model (cacti_area.py),
+# which models array periphery explicitly, so the calibration factor above would double count
+sram_bitcell_area_published_7nm = 2.7e-08
+sram_bitcell_area_published_6nm = 2.7e-08
+sram_bitcell_area_published_5nm = 2.1e-08
+sram_bitcell_area_published_3nm = 2.1e-08
 
 # cache size overheads derived from cacti for cache sizes
 # 4096, 8192, 16384, ..., 1 MB
@@ -226,6 +250,29 @@ def calc_d2d_phy_area_mm2(phy_type, bandwidth_GBps, data_rate_GTs=None):
     shoreline_mm = num_modules * module_shoreline if module_shoreline is not None else None
     return num_modules * module_area, shoreline_mm
 
+# chiplet-to-chiplet (C2C) links between compute chiplets use the same D2D PHY modules
+# returns the most links on any one chiplet: compute chiplets are copies of one die,
+# so every chiplet carries the worst-case PHY count even if some of its links go unused
+# mesh_dims is (rows, cols); by default the most square grid of num_chiplets is used
+def calc_c2c_links_per_chiplet(topology, num_chiplets, mesh_dims=None):
+    if num_chiplets <= 1:
+        return 0
+
+    if topology in ('chain', 'ring'):
+        return 1 if num_chiplets == 2 else 2
+    elif topology == 'mesh':
+        if mesh_dims is None:
+            rows = max(r for r in range(1, math.isqrt(num_chiplets) + 1) if num_chiplets % r == 0)
+            mesh_dims = (rows, num_chiplets // rows)
+        if mesh_dims[0] * mesh_dims[1] != num_chiplets:
+            raise ValueError(f"mesh_dims {mesh_dims} does not match {num_chiplets} chiplets")
+        # interior chiplets have 2 neighbors per dimension, a dimension of size 2 gives 1
+        return sum(min(dim - 1, 2) for dim in mesh_dims)
+    elif topology == 'all_to_all':
+        return num_chiplets - 1
+
+    raise ValueError(f"Unsupported C2C topology: {topology}")
+
 def find_logic_sram_transistor_density(process_node):
     if '7' in process_node:
         return transistor_density_7nm, sram_bit_cell_density_7nm
@@ -238,6 +285,18 @@ def find_logic_sram_transistor_density(process_node):
 
     raise Exception("Invalid Process Node")
 
+def find_published_sram_bitcell_area(process_node):
+    if '7' in process_node:
+        return sram_bitcell_area_published_7nm
+    elif '6' in process_node:
+        return sram_bitcell_area_published_6nm
+    elif '5' in process_node:
+        return sram_bitcell_area_published_5nm
+    elif '3' in process_node:
+        return sram_bitcell_area_published_3nm
+
+    raise Exception("Invalid Process Node")
+
 
 # a compute core consists of a fixed control overhead
 # a specified width fp32 vector engine
@@ -245,7 +304,8 @@ def find_logic_sram_transistor_density(process_node):
 # a specified L1 cache
 # at a specified process node
 # NB: you can fit multiple cores onto a single die for chiplet systems
-def calc_compute_chiplet_area_mm2(configs_dict, verbose=False):
+# sram_model: 'table' uses calc_cache_sram_area_mm2, 'cacti' uses CACTI via cacti_area.py
+def calc_compute_chiplet_area_mm2(configs_dict, verbose=False, sram_model='table'):
     total_die_map = {}
     core_breakdown_map = {}
     device_name = configs_dict['name']
@@ -296,9 +356,17 @@ def calc_compute_chiplet_area_mm2(configs_dict, verbose=False):
     per_sublane_area_mm2 += per_lane_regfile_area
 
     per_core_compute_area_mm2 = per_sublane_area_mm2 * sublane_count
-    l0_cache_area_mm2 = calc_cache_sram_area_mm2(l0_cache_size_bytes, sram_density_bitcell_mm2) * sublane_count
-    l1_cache_area_mm2 = calc_cache_sram_area_mm2(l1_cache_size_bytes, sram_density_bitcell_mm2)
-    l2_cache_slice_area_mm2 = calc_cache_sram_area_mm2(l2_cache_size_bytes, sram_density_bitcell_mm2)
+    if sram_model == 'cacti':
+        # imported here because cacti_area imports from this module
+        from cost_model.cacti_area import scratchpad_area_mm2
+        sram_area_mm2 = lambda size_bytes: scratchpad_area_mm2(size_bytes, process_node)
+    elif sram_model == 'table':
+        sram_area_mm2 = lambda size_bytes: calc_cache_sram_area_mm2(size_bytes, sram_density_bitcell_mm2)
+    else:
+        raise ValueError(f"Unknown sram_model: {sram_model}")
+    l0_cache_area_mm2 = sram_area_mm2(l0_cache_size_bytes) * sublane_count
+    l1_cache_area_mm2 = sram_area_mm2(l1_cache_size_bytes)
+    l2_cache_slice_area_mm2 = sram_area_mm2(l2_cache_size_bytes)
     per_core_area_mm2 = per_core_compute_area_mm2 + l0_cache_area_mm2 + l1_cache_area_mm2 + l2_cache_slice_area_mm2
 
     core_breakdown_map['total_core_area'] = per_core_area_mm2
@@ -323,12 +391,32 @@ def calc_compute_chiplet_area_mm2(configs_dict, verbose=False):
             d2d_config['bandwidth_byte'] / 1e9, d2d_config.get('data_rate_GTs'))
     compute_chiplet_area_mm2 += d2d_phy_area
 
+    # optional C2C links to neighboring compute chiplets. each link is its own set of PHY
+    # modules on the die edge facing that neighbor, so modules are rounded up per link
+    c2c_link_count, c2c_phy_area, c2c_shoreline_per_link_mm = 0, 0, 0
+    c2c_config = chiplet_config.get('c2c')
+    if c2c_config is not None:
+        if 'links_per_chiplet' in c2c_config:
+            c2c_link_count = c2c_config['links_per_chiplet']
+        else:
+            c2c_link_count = calc_c2c_links_per_chiplet(c2c_config['topology'], \
+                configs_dict['device'].get('compute_chiplet_count', 1), c2c_config.get('mesh_dims'))
+        per_link_phy_area, c2c_shoreline_per_link_mm = calc_d2d_phy_area_mm2(c2c_config['phy'], \
+            c2c_config['bandwidth_per_link_byte'] / 1e9, c2c_config.get('data_rate_GTs'))
+        c2c_phy_area = c2c_link_count * per_link_phy_area
+    compute_chiplet_area_mm2 += c2c_phy_area
+
     total_die_map['total_area'] = compute_chiplet_area_mm2
     total_die_map['cores_area'] = total_cores_area
     total_die_map['crossbar_area'] = total_crossbar_area
     total_die_map['d2d_phy_area'] = d2d_phy_area
+    total_die_map['c2c_link_count'] = c2c_link_count
+    total_die_map['c2c_phy_area'] = c2c_phy_area
     # compare against the die perimeter (4 * sqrt(area) for a square die); PHYs must sit on the edge
     total_die_map['d2d_shoreline_mm'] = d2d_shoreline_mm
+    # each C2C link sits on the edge facing its neighbor, so compare against one die edge
+    total_die_map['c2c_shoreline_per_link_mm'] = c2c_shoreline_per_link_mm
+    total_die_map['die_edge_mm'] = math.sqrt(compute_chiplet_area_mm2)
     total_die_map['die_perimeter_mm'] = 4 * math.sqrt(compute_chiplet_area_mm2)
     if verbose:
         return compute_chiplet_area_mm2, core_breakdown_map, total_die_map
@@ -389,10 +477,10 @@ def calc_io_die_area_mm2(config_dict, verbose=False):
     else:
         return io_die_area_mm2
 
-def calc_device_area_mm2(config_dict, verbose=False):
+def calc_device_area_mm2(config_dict, verbose=False, sram_model='table'):
     """Estimate compute-chiplet area plus one IO-die area for a device."""
     compute_chiplet_area, core_breakdown, compute_breakdown = calc_compute_chiplet_area_mm2(
-        config_dict, verbose=True
+        config_dict, verbose=True, sram_model=sram_model
     )
     io_die_area, io_breakdown = calc_io_die_area_mm2(config_dict, verbose=True)
     compute_chiplet_count = config_dict['device'].get('compute_chiplet_count', 1)
@@ -416,15 +504,34 @@ def calc_device_area_mm2(config_dict, verbose=False):
 def main():
     parser = argparse.ArgumentParser(description='Estimate device area from an architecture JSON file.')
     parser.add_argument('config', help='Path to the architecture JSON config')
+    parser.add_argument('--sram-model', choices=['table', 'cacti'], default='table',
+                        help='SRAM area model for L0/L1/L2 scratchpads')
     args = parser.parse_args()
 
     with open(args.config, 'r', encoding='utf-8') as config_file:
         config_dict = json.load(config_file)
 
-    area = calc_device_area_mm2(config_dict, verbose=True)
+    area = calc_device_area_mm2(config_dict, verbose=True, sram_model=args.sram_model)
+    core = area['core_breakdown']
+    chiplet_breakdown = area['compute_chiplet_breakdown']
+    iod_breakdown = area['io_die_breakdown']
+
+    print(f"Per-core L0 buffer area: {core['l0_buffer_area']:.3f} mm^2 ({args.sram_model})")
+    print(f"Per-core L1 buffer area: {core['l1_buffer_area']:.3f} mm^2 ({args.sram_model})")
+    print(f"Per-core L2 buffer area: {core['l2_buffer_area']:.3f} mm^2 ({args.sram_model})")
     print(f"Compute chiplet area: {area['compute_chiplet_area_mm2']:.3f} mm^2 each")
     print(f"Compute chiplets: {area['compute_chiplet_count']}")
     print(f"Total compute area: {area['total_compute_area_mm2']:.3f} mm^2")
+    print(f"Per-chiplet d2d PHY area: {chiplet_breakdown['d2d_phy_area']:.3f} mm^2")
+    if chiplet_breakdown['c2c_link_count'] > 0:
+        print(f"Per-chiplet c2c PHY area: {chiplet_breakdown['c2c_phy_area']:.3f} mm^2 "
+              f"({chiplet_breakdown['c2c_link_count']} links)")
+        shoreline = chiplet_breakdown['c2c_shoreline_per_link_mm']
+        if shoreline is not None:
+            fits = 'fits' if shoreline <= chiplet_breakdown['die_edge_mm'] else 'DOES NOT FIT'
+            print(f"c2c shoreline per link: {shoreline:.3f} mm vs die edge "
+                  f"{chiplet_breakdown['die_edge_mm']:.3f} mm ({fits})")
+    print(f"IO die d2d PHY area: {iod_breakdown['d2d_phy_area']:.3f} mm^2")
     print(f"IO die area: {area['io_die_area_mm2']:.3f} mm^2 (one IO die assumed)")
     print(f"Total device area: {area['total_device_area_mm2']:.3f} mm^2")
 

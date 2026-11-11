@@ -270,7 +270,7 @@ class Matmul(Operator):
             l0_M_tiling_factor: int,
             l0_N_tiling_factor: int,
             l0_K_tiling_factor: int,
-            dataflow: str = "os",
+            dataflow: str = "ws",
         ):
             self.l2_tile_M = l2_tile_M
             self.l2_tile_N = l2_tile_N
